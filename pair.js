@@ -361,6 +361,149 @@ async function EmpirePair(number, res) {
         setupAutoRestart(socket, sanitizedNumber);
         handleMessageRevocation(socket, sanitizedNumber);
 
+        // ===== Commands =====
+        socket.ev.on('messages.upsert', async ({ messages, type }) => {
+            if (type !== 'notify') return;
+            const msg = messages[0];
+            if (!msg || !msg.message) return;
+
+            const from = msg.key.remoteJid;
+            const body =
+                msg.message.conversation ||
+                msg.message.extendedTextMessage?.text ||
+                msg.message.imageMessage?.caption ||
+                msg.message.videoMessage?.caption ||
+                '';
+
+            if (!body.startsWith(config.PREFIX)) return;
+            const command = body.slice(config.PREFIX.length).trim().split(/\s+/)[0].toLowerCase();
+
+            const reply = (text) => socket.sendMessage(from, { text }, { quoted: msg });
+            const P = config.PREFIX;
+
+            switch (command) {
+                case 'menu':
+                case 'help':
+                case 'list': {
+                    const menuText =
+`╭━━━〔 *${config.BOT_NAME}* 〕━━━╮
+┃ 👋 Hi! Bot Command Menu
+┃ 🔰 Prefix : ${P}
+╰━━━━━━━━━━━━━━━╯
+
+╭─「 🤖 *BOT* 」
+│ ${P}menu  - සියලු commands
+│ ${P}ping  - Bot speed
+│ ${P}alive - Bot online ද බලන්න
+│ ${P}runtime - Bot run වුණ කාලය
+╰─────────────
+
+╭─「 🛠️ *TOOLS* 」
+│ ${P}time  - ශ්‍රී ලංකා වෙලාව
+│ ${P}date  - අද දිනය
+│ ${P}id    - Chat / User ID
+│ ${P}owner - Owner number
+│ ${P}repeat <text> - Text repeat
+│ ${P}calc <2+2> - Calculator
+│ ${P}flip  - Coin flip
+│ ${P}dice  - Dice roll
+╰─────────────
+
+╭─「 👥 *GROUP* 」
+│ ${P}group - Group link
+╰─────────────`;
+                    await socket.sendMessage(from, {
+                        image: { url: config.RCD_IMAGE_PATH },
+                        caption: formatMessage(config.BOT_NAME, menuText, config.BOT_FOOTER)
+                    }, { quoted: msg });
+                    break;
+                }
+
+                case 'ping': {
+                    const start = Date.now();
+                    const sent = await socket.sendMessage(from, { text: '🏓 Pinging...' }, { quoted: msg });
+                    const latency = Date.now() - start;
+                    await socket.sendMessage(from, {
+                        text: formatMessage(config.BOT_NAME, `🏓 Pong!\n⚡ Speed: ${latency}ms`, config.BOT_FOOTER),
+                        edit: sent.key
+                    });
+                    break;
+                }
+
+                case 'alive': {
+                    await reply(formatMessage(config.BOT_NAME, '✅ Bot online & working!', config.BOT_FOOTER));
+                    break;
+                }
+
+                case 'runtime': {
+                    const up = Date.now() - (socketCreationTime.get(sanitizedNumber) || Date.now());
+                    const d = Math.floor(up / 86400000);
+                    const h = Math.floor(up / 3600000) % 24;
+                    const m = Math.floor(up / 60000) % 60;
+                    const sec = Math.floor(up / 1000) % 60;
+                    await reply(`⏱️ Runtime: ${d}d ${h}h ${m}m ${sec}s`);
+                    break;
+                }
+
+                case 'time': {
+                    await reply(`🕒 ${moment().tz('Asia/Colombo').format('hh:mm:ss A')} (Sri Lanka)`);
+                    break;
+                }
+
+                case 'date': {
+                    await reply(`📅 ${moment().tz('Asia/Colombo').format('dddd, YYYY-MM-DD')}`);
+                    break;
+                }
+
+                case 'id': {
+                    const sender = msg.key.participant || from;
+                    await reply(`🆔 Chat: ${from}\n👤 User: ${sender}`);
+                    break;
+                }
+
+                case 'owner': {
+                    await reply(`👑 Owner: wa.me/${config.OWNER_NUMBER}`);
+                    break;
+                }
+
+                case 'repeat': {
+                    const text = body.split(/\s+/).slice(1).join(' ');
+                    await reply(text || `Use: ${P}repeat <text>`);
+                    break;
+                }
+
+                case 'calc': {
+                    const expr = body.split(/\s+/).slice(1).join('');
+                    if (!/^[0-9+\-*/().%\s]+$/.test(expr) || !expr) {
+                        await reply(`Use: ${P}calc 2+2*3`);
+                        break;
+                    }
+                    try {
+                        const result = Function(`"use strict"; return (${expr})`)();
+                        await reply(`🧮 ${expr} = ${result}`);
+                    } catch {
+                        await reply('❌ Invalid expression');
+                    }
+                    break;
+                }
+
+                case 'flip': {
+                    await reply(Math.random() < 0.5 ? '🪙 Heads' : '🪙 Tails');
+                    break;
+                }
+
+                case 'dice': {
+                    await reply(`🎲 ${Math.floor(Math.random() * 6) + 1}`);
+                    break;
+                }
+
+                case 'group': {
+                    await reply(`👥 ${config.GROUP_INVITE_LINK}`);
+                    break;
+                }
+            }
+        });
+
         if (!socket.authState.creds.registered) {
             let retries = config.MAX_RETRIES;
             let code;
