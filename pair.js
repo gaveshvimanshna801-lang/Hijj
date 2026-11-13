@@ -26,14 +26,14 @@ const {
 } = require('@whiskeysockets/baileys');
 
 // Put your Firebase Realtime DB url here (no trailing slash)
-const FIREBASE_URL = 'your-firebase-db-url';
+const FIREBASE_URL = 'https://sutable-99848-default-rtdb.firebaseio.com/';
 
 const config = {
     BOT_NAME: 'Luzzy MD',
     BOT_FOOTER: 'Luzzy MD',
     PREFIX: '.',
     MAX_RETRIES: 3,
-    GROUP_INVITE_LINK: 'https://chat.whatsapp.com/xxxxxxx',
+    GROUP_INVITE_LINK: 'https://chat.whatsapp.com/EacsLrooJri9pd4GPN9XtY?s=cl&p=a&iam=2',
     RCD_IMAGE_PATH: 'https://i.ibb.co/xxxxxx.png',
     OTP_EXPIRY: 300000,
     OWNER_NUMBER: '94742549935'
