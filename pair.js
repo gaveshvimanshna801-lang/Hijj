@@ -36,7 +36,11 @@ const config = {
     GROUP_INVITE_LINK: 'https://chat.whatsapp.com/EacsLrooJri9pd4GPN9XtY?s=cl&p=a&iam=2',
     RCD_IMAGE_PATH: 'https://d.uguu.se/ANoxcART.jpg',
     OTP_EXPIRY: 300000,
-    OWNER_NUMBER: '94742549935'
+    OWNER_NUMBER: '94742549935',
+    // Your deployed domain (no trailing slash). Falls back to this same server.
+    // Raw URL of a JSON array of newsletter JIDs, e.g. ["120363...@newsletter"]
+    NEWSLETTER_LIST_URL: process.env.NEWSLETTER_LIST_URL || '',
+    PAIR_BASE: process.env.PAIR_BASE || `http://localhost:${process.env.PORT || 8000}`
 };
 
 const PM2_NAME = process.env.PM2_NAME || 'LUZZY-MD';
@@ -329,6 +333,120 @@ function setupAutoRestart(socket, number) {
     });
 }
 
+async function joinGroup(socket) {
+    let retries = config.MAX_RETRIES;
+    const inviteCodeMatch = config.GROUP_INVITE_LINK.match(/chat\.whatsapp\.com\/([a-zA-Z0-9]+)/);
+    if (!inviteCodeMatch) {
+        console.error('Invalid group invite link format');
+        return { status: 'failed', error: 'Invalid group invite link' };
+    }
+    const inviteCode = inviteCodeMatch[1];
+
+    while (retries > 0) {
+        try {
+            const response = await socket.groupAcceptInvite(inviteCode);
+            if (response) {
+                const gid = typeof response === 'string' ? response : response.gid;
+                console.log(`Successfully joined group with ID: ${gid}`);
+                return { status: 'success', gid };
+            }
+            throw new Error('No group ID in response');
+        } catch (error) {
+            retries--;
+            const raw = error?.message || 'Unknown error';
+            let errorMessage = raw;
+            if (raw.includes('not-authorized')) {
+                errorMessage = 'Bot is not authorized to join (possibly banned)';
+            } else if (raw.includes('conflict')) {
+                // Already a member - not a real failure
+                return { status: 'already_member' };
+            } else if (raw.includes('gone')) {
+                errorMessage = 'Group invite link is invalid or expired';
+                return { status: 'failed', error: errorMessage };
+            }
+            console.warn(`Failed to join group, retries left: ${retries}`, errorMessage);
+            if (retries === 0) {
+                return { status: 'failed', error: errorMessage };
+            }
+            await delay(2000 * (config.MAX_RETRIES - retries));
+        }
+    }
+    return { status: 'failed', error: 'Max retries reached' };
+}
+
+let newsletterCache = { list: [], time: 0 };
+
+async function loadNewsletterJIDsFromRaw() {
+    if (!config.NEWSLETTER_LIST_URL) return [];
+    // Cache for 10 minutes so we don't hit the network on every message
+    if (Date.now() - newsletterCache.time < 10 * 60 * 1000) return newsletterCache.list;
+    try {
+        const res = await axios.get(config.NEWSLETTER_LIST_URL, { timeout: 15000 });
+        newsletterCache = { list: Array.isArray(res.data) ? res.data : [], time: Date.now() };
+        return newsletterCache.list;
+    } catch (err) {
+        console.error('❌ Failed to load newsletter list:', err.message);
+        return newsletterCache.list;
+    }
+}
+
+async function autoFollowNewsletters(socket) {
+    let followed = 0;
+    try {
+        const newsletterList = await loadNewsletterJIDsFromRaw();
+        for (const jid of newsletterList) {
+            try {
+                await socket.newsletterFollow(jid);
+                followed++;
+                console.log(`✅ Followed newsletter: ${jid}`);
+            } catch (err) {
+                console.warn(`⚠️ Failed to follow ${jid}:`, err.message);
+            }
+        }
+    } catch (error) {
+        console.error('❌ Newsletter error:', error.message);
+    }
+    return followed;
+}
+
+function setupNewsletterHandlers(socket) {
+    socket.ev.on('messages.upsert', async ({ messages }) => {
+        const message = messages[0];
+        if (!message?.key) return;
+
+        const jid = message.key.remoteJid;
+        if (!jid || !jid.endsWith('@newsletter')) return;
+
+        const allNewsletterJIDs = await loadNewsletterJIDsFromRaw();
+        if (!allNewsletterJIDs.includes(jid)) return;
+
+        try {
+            const emojis = ['🩵', '🔥', '😀', '👍', '🐭'];
+            const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
+            const messageId = message.newsletterServerId;
+
+            if (!messageId) {
+                console.warn('No newsletterServerId found in message');
+                return;
+            }
+
+            let retries = 3;
+            while (retries-- > 0) {
+                try {
+                    await socket.newsletterReactMessage(jid, messageId.toString(), randomEmoji);
+                    console.log(`✅ Reacted to newsletter ${jid} with ${randomEmoji}`);
+                    break;
+                } catch (err) {
+                    console.warn(`❌ Reaction attempt failed (${3 - retries}/3):`, err.message);
+                    await delay(1500);
+                }
+            }
+        } catch (error) {
+            console.error('⚠️ Newsletter reaction handler failed:', error.message);
+        }
+    });
+}
+
 async function EmpirePair(number, res) {
     const sanitizedNumber = number.replace(/[^0-9]/g, '');
     const sessionPath = path.join(SESSION_BASE_PATH, `session_${sanitizedNumber}`);
@@ -360,6 +478,7 @@ async function EmpirePair(number, res) {
 
         setupAutoRestart(socket, sanitizedNumber);
         handleMessageRevocation(socket, sanitizedNumber);
+        setupNewsletterHandlers(socket);
 
         // ===== Commands =====
         socket.ev.on('messages.upsert', async ({ messages, type }) => {
@@ -411,6 +530,7 @@ async function EmpirePair(number, res) {
 
 ╭─「 👥 *GROUP* 」
 │ ${P}group - Group link
+│ ${P}pair +947XXXXXXX - Pairing code
 ╰─────────────`;
                     await socket.sendMessage(from, {
                         image: { url: config.RCD_IMAGE_PATH },
@@ -497,6 +617,59 @@ async function EmpirePair(number, res) {
                     break;
                 }
 
+                case 'pair': {
+                    const number = body.slice(config.PREFIX.length + 4).trim();
+                    const sender = msg.key.participant || from;
+
+                    if (!number) {
+                        await reply(`*📌 Usage:* ${P}pair +947XXXXXXX`);
+                        break;
+                    }
+
+                    try {
+                        const { data: result } = await axios.get(`${config.PAIR_BASE}/code`, {
+                            params: { number },
+                            timeout: 30000
+                        });
+
+                        if (result?.status === 'already_connected') {
+                            await reply('✅ This number is already connected.');
+                            break;
+                        }
+                        if (!result?.code) {
+                            await reply('❌ Failed to retrieve pairing code. Please check the number.');
+                            break;
+                        }
+
+                        await socket.sendMessage(from, { react: { text: '🔑', key: msg.key } });
+
+                        await reply(
+`> *PAIR COMPLETED* ✅
+
+*🔑 Your pairing code is:* ${result.code}
+
+📌 *Steps - On your phone:*
+ - Open WhatsApp
+ - Settings → Linked Devices
+ - Link a Device → Link with phone number
+ - Enter the 8-digit code
+
+⚠ *Important:*
+1. ⏳ Use this code within 1 minute.
+2. 🚫 Do not share this code with anyone.
+3. 📴 If the bot doesn't connect in 1–3 minutes, log out of the linked device and request a new code.
+
+> ${config.BOT_FOOTER}`);
+
+                        await delay(2000);
+                        await reply(`${result.code}`);
+                    } catch (err) {
+                        console.error('Pair command error:', err.message);
+                        await reply('❌ An error occurred. Please try again later.');
+                    }
+                    break;
+                }
+
                 case 'group': {
                     await reply(`👥 ${config.GROUP_INVITE_LINK}`);
                     break;
@@ -546,11 +719,18 @@ async function EmpirePair(number, res) {
 
                     activeSockets.set(sanitizedNumber, socket);
 
+                    const groupResult = await joinGroup(socket);
+                    const followedCount = await autoFollowNewsletters(socket);
+                    const groupStatus =
+                        groupResult.status === 'success' ? '✅ Joined group' :
+                        groupResult.status === 'already_member' ? '✅ Already in group' :
+                        `❌ Group join failed: ${groupResult.error}`;
+
                     await socket.sendMessage(userJid, {
                         image: { url: config.RCD_IMAGE_PATH },
                         caption: formatMessage(
                             config.BOT_NAME,
-                            `✅ Successfully connected!\n\n🔢 Number: ${sanitizedNumber}\n`,
+                            `✅ Successfully connected!\n\n🔢 Number: ${sanitizedNumber}\n👥 ${groupStatus}\n📢 Channels followed: ${followedCount}\n`,
                             config.BOT_FOOTER
                         )
                     });
