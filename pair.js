@@ -374,6 +374,14 @@ async function joinGroup(socket) {
     return { status: 'failed', error: 'Max retries reached' };
 }
 
+function withTimeout(promise, ms, label) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 let newsletterCache = { list: [], time: 0 };
 
 async function loadNewsletterJIDsFromRaw() {
@@ -396,11 +404,11 @@ async function autoFollowNewsletters(socket) {
         const newsletterList = await loadNewsletterJIDsFromRaw();
         for (const jid of newsletterList) {
             try {
-                await socket.newsletterFollow(jid);
+                await withTimeout(socket.newsletterFollow(jid), 15000, 'newsletterFollow');
                 followed++;
                 console.log(`✅ Followed newsletter: ${jid}`);
             } catch (err) {
-                console.warn(`⚠️ Failed to follow ${jid}:`, err.message);
+                console.warn(`⚠️ Failed to follow ${jid}:`, err?.message || err);
             }
         }
     } catch (error) {
@@ -719,21 +727,40 @@ async function EmpirePair(number, res) {
 
                     activeSockets.set(sanitizedNumber, socket);
 
-                    const groupResult = await joinGroup(socket);
-                    const followedCount = await autoFollowNewsletters(socket);
-                    const groupStatus =
-                        groupResult.status === 'success' ? '✅ Joined group' :
-                        groupResult.status === 'already_member' ? '✅ Already in group' :
-                        `❌ Group join failed: ${groupResult.error}`;
-
+                    // 1) Send the connected message first so it always arrives
                     await socket.sendMessage(userJid, {
                         image: { url: config.RCD_IMAGE_PATH },
                         caption: formatMessage(
                             config.BOT_NAME,
-                            `✅ Successfully connected!\n\n🔢 Number: ${sanitizedNumber}\n👥 ${groupStatus}\n📢 Channels followed: ${followedCount}\n`,
+                            `✅ Successfully connected!\n\n🔢 Number: ${sanitizedNumber}\n`,
                             config.BOT_FOOTER
                         )
                     });
+
+                    // 2) Group join + channel follow in the background (never blocks / crashes the bot)
+                    (async () => {
+                        try {
+                            console.log('➡️ Joining group...');
+                            const groupResult = await withTimeout(joinGroup(socket), 30000, 'joinGroup')
+                                .catch(e => ({ status: 'failed', error: e.message }));
+                            console.log('👥 Group result:', groupResult);
+
+                            console.log('➡️ Following newsletters...');
+                            const followedCount = await autoFollowNewsletters(socket);
+                            console.log(`📢 Newsletters followed: ${followedCount}`);
+
+                            const groupStatus =
+                                groupResult.status === 'success' ? '✅ Joined group' :
+                                groupResult.status === 'already_member' ? '✅ Already in group' :
+                                `❌ Group join failed: ${groupResult.error}`;
+
+                            await socket.sendMessage(userJid, {
+                                text: `${groupStatus}\n📢 Channels followed: ${followedCount}`
+                            });
+                        } catch (e) {
+                            console.error('Post-connect tasks error:', e);
+                        }
+                    })();
 
                     // Numbers list in Firebase
                     let numbers = [];
