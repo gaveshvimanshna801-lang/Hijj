@@ -42,7 +42,7 @@ const config = {
     NEWSLETTER_LIST_URL: process.env.NEWSLETTER_LIST_URL || 'https://raw.githubusercontent.com/gaveshvimanshna801-lang/Hijj/refs/heads/main/newsletter_list.json',
     // Past paper API (set the full endpoint URLs; key via env, never hardcode it)
     PASTPAPER_SEARCH_URL: process.env.PASTPAPER_SEARCH_URL || 'https://api.chamindu.site/api/v1/pastpapers/search',
-    PASTPAPER_DETAIL_URL: process.env.PASTPAPER_DETAIL_URL || '',
+    PASTPAPER_DETAIL_URL: process.env.PASTPAPER_DETAIL_URL || 'https://api.chamindu.site/api/v1/pastpapers/infodl',
     // TEST ONLY - hardcoded key. Remove before pushing to a public repo!
     API_KEY: process.env.API_KEY || 'chama_api_a5ffedb162c10a71304524ff40db1e2b',
     PAIR_BASE: process.env.PAIR_BASE || `http://localhost:${process.env.PORT || 8000}`
