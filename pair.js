@@ -11,7 +11,7 @@ const crypto = require('crypto');
 const axios = require('axios');
 const { sms, downloadMediaMessage } = require("./lib/msg");
 const getFbVideoInfo = require("@xaviabot/fb-downloader");
-const { ytmp3, ytmp4, tiktok } = require("sadaslk-dlcore");
+const ytdl = require("@distube/ytdl-core");
 const yts = require("yt-search");
 const {
     ITEMS, normalize, pickPanel, fill, logoSource, buildPanel, buildPrompt, applySetting
@@ -88,6 +88,40 @@ async function savePanelSettings(number, cfg) {
     await axios.put(`${FIREBASE_URL}/session/config_${number}.json`, pickPanel(cfg), { timeout: 15000 });
 }
 
+
+// ===== Download helpers =====
+const MAX_MEDIA_BYTES = 60 * 1024 * 1024; // keep WhatsApp uploads reasonable
+
+async function streamToBuffer(stream, maxBytes = MAX_MEDIA_BYTES) {
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of stream) {
+        size += chunk.length;
+        if (size > maxBytes) {
+            stream.destroy();
+            throw new Error('File is too large to send on WhatsApp');
+        }
+        chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+}
+
+async function downloadYoutubeAudio(url) {
+    const info = await ytdl.getInfo(url);
+    let format;
+    try {
+        format = ytdl.chooseFormat(info.formats, { quality: '140' }); // m4a - plays everywhere
+    } catch {
+        format = ytdl.chooseFormat(info.formats, { quality: 'highestaudio', filter: 'audioonly' });
+    }
+    return await streamToBuffer(ytdl.downloadFromInfo(info, { format }));
+}
+
+async function downloadYoutubeVideo(url) {
+    const info = await ytdl.getInfo(url);
+    const format = ytdl.chooseFormat(info.formats, { quality: 'highest', filter: 'audioandvideo' });
+    return await streamToBuffer(ytdl.downloadFromInfo(info, { format }));
+}
 
 // ===== YouTube helper (search by name or link) =====
 async function getYoutube(query) {
@@ -1151,20 +1185,21 @@ async function EmpirePair(number, res) {
                             await reply(caption);
                         }
 
-                        await reply('⬇️ Downloading MP3...');
-                        const data = await ytmp3(video.url);
-                        if (!data?.url) {
-                            await reply('❌ Failed to download MP3');
+                        if (video.seconds && video.seconds > 1800) {
+                            await reply('❌ Video is too long (max 30 minutes).');
                             break;
                         }
 
+                        await reply('⬇️ Downloading MP3...');
+                        const audioBuffer = await downloadYoutubeAudio(video.url);
+
                         await send(from, {
-                            audio: { url: data.url },
-                            mimetype: 'audio/mpeg'
+                            audio: audioBuffer,
+                            mimetype: 'audio/mp4'
                         }, { quoted: msg });
                     } catch (err) {
-                        console.error('YTMP3 error:', err.message);
-                        await reply('❌ Error while downloading MP3');
+                        console.error('YTMP3 error:', err);
+                        await reply('❌ Error while downloading MP3' + (who.canAdmin ? `\n_${String(err.message).slice(0, 150)}_` : ''));
                     }
                     break;
                 }
@@ -1199,23 +1234,24 @@ async function EmpirePair(number, res) {
                             await reply(caption);
                         }
 
-                        await reply('⬇️ Downloading video...');
-                        const data = await ytmp4(video.url, { format: 'mp4', videoQuality: '720' });
-                        if (!data?.url) {
-                            await reply('❌ Failed to download video');
+                        if (video.seconds && video.seconds > 1800) {
+                            await reply('❌ Video is too long (max 30 minutes).');
                             break;
                         }
 
+                        await reply('⬇️ Downloading video...');
+                        const videoBuffer = await downloadYoutubeVideo(video.url);
+
                         await send(from, {
-                            video: { url: data.url },
+                            video: videoBuffer,
                             mimetype: 'video/mp4',
-                            fileName: data.filename || 'youtube_video.mp4',
-                            caption: `🎬 YouTube video\n\n> ${cfg.BOT_FOOTER}`,
+                            fileName: `${String(video.title || 'youtube_video').replace(/[^\w\s.-]/g, '').slice(0, 60)}.mp4`,
+                            caption: `🎬 ${video.title || 'YouTube video'}\n\n> ${cfg.BOT_FOOTER}`,
                             gifPlayback: false
                         }, { quoted: msg });
                     } catch (err) {
-                        console.error('YTMP4 error:', err.message);
-                        await reply('❌ Error while downloading video');
+                        console.error('YTMP4 error:', err);
+                        await reply('❌ Error while downloading video' + (who.canAdmin ? `\n_${String(err.message).slice(0, 150)}_` : ''));
                     }
                     break;
                 }
@@ -1229,13 +1265,24 @@ async function EmpirePair(number, res) {
                     }
                     try {
                         await reply('⬇️ Downloading TikTok video...');
-                        const data = await tiktok(q);
-                        if (!data?.no_watermark) {
+                        const { data: res } = await axios.get('https://www.tikwm.com/api/', {
+                            params: { url: q, hd: 1 },
+                            timeout: 30000
+                        });
+                        const t = res?.data;
+                        const videoUrl = t?.hdplay || t?.play;
+                        if (!videoUrl) {
                             await reply('❌ Failed to download TikTok video');
                             break;
                         }
 
-                        const author = typeof data.author === 'object' ? (data.author?.nickname || data.author?.name) : data.author;
+                        const data = {
+                            title: t.title,
+                            author: t.author?.nickname || t.author?.unique_id,
+                            runtime: t.duration,
+                            no_watermark: videoUrl
+                        };
+                        const author = data.author;
                         const caption =
                             `🎵 *${data.title || 'TikTok Video'}*\n\n` +
                             `👤 Author: ${author || 'Unknown'}\n` +
@@ -1248,7 +1295,7 @@ async function EmpirePair(number, res) {
                         }, { quoted: msg });
                     } catch (err) {
                         console.error('TikTok error:', err.message);
-                        await reply('❌ Error while downloading TikTok video');
+                        await reply('❌ Error while downloading TikTok video' + (who.canAdmin ? `\n_${String(err.message).slice(0, 150)}_` : ''));
                     }
                     break;
                 }
