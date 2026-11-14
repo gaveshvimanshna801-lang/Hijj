@@ -29,17 +29,21 @@ const {
 const FIREBASE_URL = 'https://sutable-99848-default-rtdb.firebaseio.com/';
 
 const config = {
-    BOT_NAME: 'MINSOO MD',
-    BOT_FOOTER: 'MINSOO MD',
-    PREFIX: ',',
+    BOT_NAME: 'Luzzy MD',
+    BOT_FOOTER: 'Luzzy MD',
+    PREFIX: '.',
     MAX_RETRIES: 3,
-    GROUP_INVITE_LINK: 'https://chat.whatsapp.com/KEVjV4cupLCJteG7FTPsk0?s=cl&p=a&iam=2',
-    RCD_IMAGE_PATH: 'https://raw.githubusercontent.com/gaveshvimanshna801-lang/Gnu/refs/heads/main/file_00000000d608821191bbb43087415059.png',
+    GROUP_INVITE_LINK: 'https://chat.whatsapp.com/EacsLrooJri9pd4GPN9XtY?s=cl&p=a&iam=2',
+    RCD_IMAGE_PATH: 'https://d.uguu.se/ANoxcART.jpg',
     OTP_EXPIRY: 300000,
     OWNER_NUMBER: '94742549935',
     // Your deployed domain (no trailing slash). Falls back to this same server.
     // Raw URL of a JSON array of newsletter JIDs, e.g. ["120363...@newsletter"]
     NEWSLETTER_LIST_URL: process.env.NEWSLETTER_LIST_URL || 'https://raw.githubusercontent.com/gaveshvimanshna801-lang/Hijj/refs/heads/main/newsletter_list.json',
+    // Past paper API (set the full endpoint URLs; key via env, never hardcode it)
+    PASTPAPER_SEARCH_URL: process.env.PASTPAPER_SEARCH_URL || '',
+    PASTPAPER_DETAIL_URL: process.env.PASTPAPER_DETAIL_URL || '',
+    API_KEY: process.env.API_KEY || '',
     PAIR_BASE: process.env.PAIR_BASE || `http://localhost:${process.env.PORT || 8000}`
 };
 
@@ -539,6 +543,11 @@ async function EmpirePair(number, res) {
 ╭─「 👥 *GROUP* 」
 │ ${P}group - Group link
 │ ${P}pair +947XXXXXXX - Pairing code
+╰─────────────
+
+╭─「 📚 *EDUCATION* 」
+│ ${P}pastpaper <grade 11 maths> - Past papers search
+│ ${P}pastdl <paper link> - Paper PDF download
 ╰─────────────`;
                     await socket.sendMessage(from, {
                         image: { url: config.RCD_IMAGE_PATH },
@@ -674,6 +683,76 @@ async function EmpirePair(number, res) {
                     } catch (err) {
                         console.error('Pair command error:', err.message);
                         await reply('❌ An error occurred. Please try again later.');
+                    }
+                    break;
+                }
+
+                case 'pastpaper':
+                case 'pp': {
+                    const q = body.split(/\s+/).slice(1).join(' ').trim();
+                    if (!q) {
+                        await reply(`📚 Usage: ${P}pastpaper grade 11 maths`);
+                        break;
+                    }
+                    if (!config.PASTPAPER_SEARCH_URL) {
+                        await reply('⚠️ PASTPAPER_SEARCH_URL is not configured.');
+                        break;
+                    }
+                    try {
+                        const { data } = await axios.get(config.PASTPAPER_SEARCH_URL, {
+                            params: { q, query: q, api_key: config.API_KEY },
+                            timeout: 30000
+                        });
+                        const list = (data?.result || data?.data?.results || []).slice(0, 10);
+                        if (!list.length) {
+                            await reply('❌ No past papers found.');
+                            break;
+                        }
+                        const text = list
+                            .map((p, i) => `*${i + 1}. ${p.title}*\n🔗 ${p.link || p.url}`)
+                            .join('\n\n');
+                        await reply(formatMessage(
+                            '📚 PAST PAPERS',
+                            `${text}\n\n💡 PDF ekak ganna: ${P}pastdl <link>`,
+                            config.BOT_FOOTER
+                        ));
+                    } catch (err) {
+                        console.error('Pastpaper error:', err.message);
+                        await reply('❌ Search failed. Please try again later.');
+                    }
+                    break;
+                }
+
+                case 'pastdl': {
+                    const link = body.split(/\s+/)[1];
+                    if (!link || !/^https?:\/\/pastpapers\.wiki\//i.test(link)) {
+                        await reply(`Usage: ${P}pastdl https://pastpapers.wiki/...`);
+                        break;
+                    }
+                    if (!config.PASTPAPER_DETAIL_URL) {
+                        await reply('⚠️ PASTPAPER_DETAIL_URL is not configured.');
+                        break;
+                    }
+                    try {
+                        const { data } = await axios.get(config.PASTPAPER_DETAIL_URL, {
+                            params: { url: link, api_key: config.API_KEY },
+                            timeout: 30000
+                        });
+                        const info = data?.result;
+                        const pdf = info?.download_links?.find(l => l.type === 'PDF');
+                        if (!pdf) {
+                            await reply('❌ PDF link not found for this paper.');
+                            break;
+                        }
+                        await socket.sendMessage(from, {
+                            document: { url: pdf.url },
+                            mimetype: 'application/pdf',
+                            fileName: `${(info.title || 'paper').replace(/[^\w\s|-]/g, '').slice(0, 80)}.pdf`,
+                            caption: `📚 ${info.title}`
+                        }, { quoted: msg });
+                    } catch (err) {
+                        console.error('Pastdl error:', err.message);
+                        await reply('❌ Could not fetch the paper.');
                     }
                     break;
                 }
