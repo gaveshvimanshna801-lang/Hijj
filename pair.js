@@ -29,8 +29,8 @@ const {
 const FIREBASE_URL = 'https://sutable-99848-default-rtdb.firebaseio.com/';
 
 const config = {
-    BOT_NAME: 'MINSOO MD',
-    BOT_FOOTER: '𝐂𝐑𝐄𝐀𝐓𝐄 𝐁𝐘 𝐆𝐀𝐕𝐄𝐒𝐇 𝐕𝐈𝐌𝐀𝐍𝐒𝐇𝐀𝐍𝐀',
+    BOT_NAME: 'MINSOO MD🇯🇵',
+    BOT_FOOTER: 'Powerd By Minsoo Md V1📌',
     PREFIX: '.',
     MAX_RETRIES: 3,
     GROUP_INVITE_LINK: 'https://chat.whatsapp.com/KEVjV4cupLCJteG7FTPsk0?s=cl&p=a&iam=2',
@@ -41,9 +41,10 @@ const config = {
     // Raw URL of a JSON array of newsletter JIDs, e.g. ["120363...@newsletter"]
     NEWSLETTER_LIST_URL: process.env.NEWSLETTER_LIST_URL || 'https://raw.githubusercontent.com/gaveshvimanshna801-lang/Hijj/refs/heads/main/newsletter_list.json',
     // Past paper API (set the full endpoint URLs; key via env, never hardcode it)
-    PASTPAPER_SEARCH_URL: process.env.PASTPAPER_SEARCH_URL || '',
+    PASTPAPER_SEARCH_URL: process.env.PASTPAPER_SEARCH_URL || 'https://api.chamindu.site/api/v1/pastpapers/search',
     PASTPAPER_DETAIL_URL: process.env.PASTPAPER_DETAIL_URL || '',
-    API_KEY: process.env.API_KEY || '',
+    // TEST ONLY - hardcoded key. Remove before pushing to a public repo!
+    API_KEY: process.env.API_KEY || 'chama_api_a5ffedb162c10a71304524ff40db1e2b',
     PAIR_BASE: process.env.PAIR_BASE || `http://localhost:${process.env.PORT || 8000}`
 };
 
@@ -703,7 +704,8 @@ async function EmpirePair(number, res) {
                             params: { q, query: q, api_key: config.API_KEY },
                             timeout: 30000
                         });
-                        const list = (data?.result || data?.data?.results || []).slice(0, 10);
+                        const raw = data?.data ?? data?.result ?? [];
+                        const list = (Array.isArray(raw) ? raw : raw.results || []).slice(0, 10);
                         if (!list.length) {
                             await reply('❌ No past papers found.');
                             break;
@@ -738,8 +740,10 @@ async function EmpirePair(number, res) {
                             params: { url: link, api_key: config.API_KEY },
                             timeout: 30000
                         });
-                        const info = data?.result;
-                        const pdf = info?.download_links?.find(l => l.type === 'PDF');
+                        const info = data?.data ?? data?.result;
+                        const files = info?.downloads || info?.download_links || [];
+                        const found = files.find(f => /pdf/i.test(f.type || '') || /\.pdf($|\?)/i.test(f.url || f.direct_url || ''));
+                        const pdf = found ? { url: found.direct_url || found.url } : null;
                         if (!pdf) {
                             await reply('❌ PDF link not found for this paper.');
                             break;
