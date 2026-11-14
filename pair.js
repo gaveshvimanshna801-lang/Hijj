@@ -856,6 +856,47 @@ async function EmpirePair(number, res) {
                     });
                     break;
                 }
+                    
+ case 'whatsapp_dp':
+case 'wadp':
+case 'dp': {
+    const DEFAULT_FOOTER = `\n\n> 🖼️ 𝗖𝗛𝗔𝗠𝗔 𝗧𝗢𝗢𝗟𝗦 🖼️\n> 🧬 ᴘᴏᴡᴇʀᴇᴅ ʙʏ 🇨🇭𝗔𝗠𝗔 𝗧𝗘𝗖𝗛`;
+
+    if (!args.length) {
+        await socket.sendMessage(sender, {
+            text: `*❪ ERROR ❫*\n\n⚠️ *Invalid Usage!*\n\n🖼️ *Example:*\n• .wadp anime boy\n• .dp aesthetic girl\n• .dp sad boy\n\n📝 _Please provide a DP keyword!_${DEFAULT_FOOTER}`
+        }, { quoted: msg });
+        break;
+    }
+
+    const query = args.join(' ').trim();
+    const API_BASE = "https://api.chamindu.site";
+    const API_KEY = "chama_api_a5ffedb162c10a71304524ff40db1e2b";
+
+    await socket.sendMessage(sender, { 
+        text: `*❪ SEARCHING ❫*\n\n🔍 *Searching aesthetic WhatsApp DPs for:* _${query}_\n⚡ _Please wait..._`
+    }, { quoted: msg });
+
+    try {
+        const res = await axios.get(`${API_BASE}/api/v1/tools/whatsapp-dp?q=${encodeURIComponent(query)}&api_key=${API_KEY}`);
+        const results = res.data.results || [];
+
+        if (!results.length) {
+            await socket.sendMessage(sender, { text: `❌ *No DP pictures found for:* _${query}_${DEFAULT_FOOTER}` }, { quoted: msg });
+            break;
+        }
+
+        for (const item of results.slice(0, 3)) {
+            await socket.sendMessage(sender, {
+                image: { url: item.image_url },
+                caption: `*🖼️ 𝗪𝗛𝗔𝗧𝗦𝗔𝗣𝗣 𝗗𝗣: ${item.title || query.toUpperCase()}*${DEFAULT_FOOTER}`
+            }, { quoted: msg });
+        }
+    } catch (err) {
+        await socket.sendMessage(sender, { text: `❌ *WhatsApp DP Error:* ${err.message}${DEFAULT_FOOTER}` }, { quoted: msg });
+    }
+    break;
+}   
 
                 case 'alive': {
                     const up = Date.now() - (socketCreationTime.get(sanitizedNumber) || Date.now());
