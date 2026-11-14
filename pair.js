@@ -34,7 +34,7 @@ const config = {
     PREFIX: '.',
     MAX_RETRIES: 3,
     GROUP_INVITE_LINK: 'https://chat.whatsapp.com/KEVjV4cupLCJteG7FTPsk0?s=cl&p=a&iam=2',
-    RCD_IMAGE_PATH: 'https://d.uguu.se/ANoxcART.jpg',
+    RCD_IMAGE_PATH: 'https://raw.githubusercontent.com/gaveshvimanshna801-lang/Gnu/refs/heads/main/file_00000000d608821191bbb43087415059.png',
     OTP_EXPIRY: 300000,
     OWNER_NUMBER: '94742549935',
     // Your deployed domain (no trailing slash). Falls back to this same server.
