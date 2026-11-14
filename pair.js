@@ -10,6 +10,9 @@ const Jimp = require('jimp');
 const crypto = require('crypto');
 const axios = require('axios');
 const { sms, downloadMediaMessage } = require("./lib/msg");
+const getFbVideoInfo = require("@xaviabot/fb-downloader");
+const { ytmp3, ytmp4, tiktok } = require("sadaslk-dlcore");
+const yts = require("yt-search");
 const {
     ITEMS, normalize, pickPanel, fill, logoSource, buildPanel, buildPrompt, applySetting
 } = require("./lib/panel");
@@ -83,6 +86,18 @@ async function loadPanelSettings(number) {
 
 async function savePanelSettings(number, cfg) {
     await axios.put(`${FIREBASE_URL}/session/config_${number}.json`, pickPanel(cfg), { timeout: 15000 });
+}
+
+
+// ===== YouTube helper (search by name or link) =====
+async function getYoutube(query) {
+    const idMatch = query.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|embed\/|live\/))([\w-]{11})/i);
+    if (idMatch) {
+        return await yts({ videoId: idMatch[1] });
+    }
+    const search = await yts(query);
+    if (!search.videos || !search.videos.length) return null;
+    return search.videos[0];
 }
 
 function formatMessage(title, content, footer) {
@@ -833,6 +848,13 @@ async function EmpirePair(number, res) {
 │ ${P}pair +947XXXXXXX - Pairing code
 ╰─────────────
 
+╭─「 📥 *DOWNLOAD* 」
+│ ${P}fb <facebook link> - Facebook video download
+│ ${P}song <name/link> - YouTube MP3
+│ ${P}video <name/link> - YouTube MP4
+│ ${P}tiktok <link> - TikTok video (no watermark)
+╰─────────────
+
 ╭─「 📚 *EDUCATION* 」
 │ ${P}pastpaper <grade 11 maths> - Past papers search
 │ ${P}pastdl <paper link> - Paper PDF download
@@ -856,47 +878,6 @@ async function EmpirePair(number, res) {
                     });
                     break;
                 }
-                    
- case 'whatsapp_dp':
-case 'wadp':
-case 'dp': {
-    const DEFAULT_FOOTER = `\n\n> 🖼️ 𝗖𝗛𝗔𝗠𝗔 𝗧𝗢𝗢𝗟𝗦 🖼️\n> 🧬 ᴘᴏᴡᴇʀᴇᴅ ʙʏ 🇨🇭𝗔𝗠𝗔 𝗧𝗘𝗖𝗛`;
-
-    if (!args.length) {
-        await socket.sendMessage(sender, {
-            text: `*❪ ERROR ❫*\n\n⚠️ *Invalid Usage!*\n\n🖼️ *Example:*\n• .wadp anime boy\n• .dp aesthetic girl\n• .dp sad boy\n\n📝 _Please provide a DP keyword!_${DEFAULT_FOOTER}`
-        }, { quoted: msg });
-        break;
-    }
-
-    const query = args.join(' ').trim();
-    const API_BASE = "https://api.chamindu.site";
-    const API_KEY = "chama_api_a5ffedb162c10a71304524ff40db1e2b";
-
-    await socket.sendMessage(sender, { 
-        text: `*❪ SEARCHING ❫*\n\n🔍 *Searching aesthetic WhatsApp DPs for:* _${query}_\n⚡ _Please wait..._`
-    }, { quoted: msg });
-
-    try {
-        const res = await axios.get(`${API_BASE}/api/v1/tools/whatsapp-dp?q=${encodeURIComponent(query)}&api_key=${API_KEY}`);
-        const results = res.data.results || [];
-
-        if (!results.length) {
-            await socket.sendMessage(sender, { text: `❌ *No DP pictures found for:* _${query}_${DEFAULT_FOOTER}` }, { quoted: msg });
-            break;
-        }
-
-        for (const item of results.slice(0, 3)) {
-            await socket.sendMessage(sender, {
-                image: { url: item.image_url },
-                caption: `*🖼️ 𝗪𝗛𝗔𝗧𝗦𝗔𝗣𝗣 𝗗𝗣: ${item.title || query.toUpperCase()}*${DEFAULT_FOOTER}`
-            }, { quoted: msg });
-        }
-    } catch (err) {
-        await socket.sendMessage(sender, { text: `❌ *WhatsApp DP Error:* ${err.message}${DEFAULT_FOOTER}` }, { quoted: msg });
-    }
-    break;
-}   
 
                 case 'alive': {
                     const up = Date.now() - (socketCreationTime.get(sanitizedNumber) || Date.now());
@@ -1095,6 +1076,179 @@ case 'dp': {
                     } catch (err) {
                         console.error('Pastdl error:', err.message);
                         await reply('❌ Could not fetch the paper.');
+                    }
+                    break;
+                }
+
+                case 'fb':
+                case 'facebook':
+                case 'fbdownload': {
+                    const url = body.split(/\s+/)[1];
+                    if (!url) {
+                        await reply(`*Please provide a valid Facebook video URL!* ❤️\n\nUse: ${P}fb https://www.facebook.com/...`);
+                        break;
+                    }
+                    if (!/^(https?:\/\/)?((www|m|web)\.)?(facebook\.com|fb\.com|fb\.watch)\/\S+/i.test(url)) {
+                        await reply('*Invalid Facebook URL! Please check and try again.* ☹️');
+                        break;
+                    }
+                    try {
+                        await socket.sendMessage(from, { react: { text: '✅', key: msg.key } });
+                        await reply('*Downloading your video...* ❤️');
+
+                        const result = await getFbVideoInfo(url);
+                        if (!result || (!result.sd && !result.hd)) {
+                            await reply('*Failed to download video. Please try again later.* ☹️');
+                            break;
+                        }
+
+                        const qualityText = result.hd ? 'HD' : 'SD';
+                        const videoUrl = result.hd || result.sd;
+
+                        await sendWithLogo(from, formatMessage(
+                            '📥 FB DOWNLOADER',
+                            `👻 *Title*: ${result.title || 'Unknown'}\n👻 *Quality*: ${qualityText}`,
+                            cfg.BOT_FOOTER
+                        ), { quoted: msg });
+
+                        await send(from, {
+                            video: { url: videoUrl },
+                            caption: `*📥 Downloaded in ${qualityText} quality*\n\n> ${cfg.BOT_FOOTER}`
+                        }, { quoted: msg });
+                    } catch (err) {
+                        console.error('FB download error:', err.message);
+                        await reply(`*Error:* ${err.message || 'Download failed'}`);
+                    }
+                    break;
+                }
+
+                case 'ytmp3':
+                case 'yta':
+                case 'song': {
+                    const q = body.split(/\s+/).slice(1).join(' ').trim();
+                    if (!q) {
+                        await reply(`🎵 Send song name or YouTube link\n\nUse: ${P}song Shape of You`);
+                        break;
+                    }
+                    try {
+                        await reply('🔎 Searching YouTube...');
+                        const video = await getYoutube(q);
+                        if (!video) {
+                            await reply('❌ No results found');
+                            break;
+                        }
+
+                        const caption =
+                            `🎵 *${video.title}*\n\n` +
+                            `👤 Channel: ${video.author?.name || 'Unknown'}\n` +
+                            `⏱ Duration: ${video.timestamp || '-'}\n` +
+                            `👀 Views: ${Number(video.views || 0).toLocaleString()}\n` +
+                            `🔗 ${video.url}\n\n> ${cfg.BOT_FOOTER}`;
+
+                        try {
+                            await send(from, { image: { url: video.thumbnail }, caption }, { quoted: msg });
+                        } catch {
+                            await reply(caption);
+                        }
+
+                        await reply('⬇️ Downloading MP3...');
+                        const data = await ytmp3(video.url);
+                        if (!data?.url) {
+                            await reply('❌ Failed to download MP3');
+                            break;
+                        }
+
+                        await send(from, {
+                            audio: { url: data.url },
+                            mimetype: 'audio/mpeg'
+                        }, { quoted: msg });
+                    } catch (err) {
+                        console.error('YTMP3 error:', err.message);
+                        await reply('❌ Error while downloading MP3');
+                    }
+                    break;
+                }
+
+                case 'ytmp4':
+                case 'ytv':
+                case 'video': {
+                    const q = body.split(/\s+/).slice(1).join(' ').trim();
+                    if (!q) {
+                        await reply(`🎬 Send video name or YouTube link\n\nUse: ${P}video Shape of You`);
+                        break;
+                    }
+                    try {
+                        await reply('🔎 Searching YouTube...');
+                        const video = await getYoutube(q);
+                        if (!video) {
+                            await reply('❌ No results found');
+                            break;
+                        }
+
+                        const caption =
+                            `🎬 *${video.title}*\n\n` +
+                            `👤 Channel: ${video.author?.name || 'Unknown'}\n` +
+                            `⏱ Duration: ${video.timestamp || '-'}\n` +
+                            `👀 Views: ${Number(video.views || 0).toLocaleString()}\n` +
+                            (video.ago ? `📅 Uploaded: ${video.ago}\n` : '') +
+                            `🔗 ${video.url}\n\n> ${cfg.BOT_FOOTER}`;
+
+                        try {
+                            await send(from, { image: { url: video.thumbnail }, caption }, { quoted: msg });
+                        } catch {
+                            await reply(caption);
+                        }
+
+                        await reply('⬇️ Downloading video...');
+                        const data = await ytmp4(video.url, { format: 'mp4', videoQuality: '720' });
+                        if (!data?.url) {
+                            await reply('❌ Failed to download video');
+                            break;
+                        }
+
+                        await send(from, {
+                            video: { url: data.url },
+                            mimetype: 'video/mp4',
+                            fileName: data.filename || 'youtube_video.mp4',
+                            caption: `🎬 YouTube video\n\n> ${cfg.BOT_FOOTER}`,
+                            gifPlayback: false
+                        }, { quoted: msg });
+                    } catch (err) {
+                        console.error('YTMP4 error:', err.message);
+                        await reply('❌ Error while downloading video');
+                    }
+                    break;
+                }
+
+                case 'tiktok':
+                case 'tt': {
+                    const q = body.split(/\s+/)[1];
+                    if (!q) {
+                        await reply(`📱 Send TikTok link\n\nUse: ${P}tiktok https://vt.tiktok.com/...`);
+                        break;
+                    }
+                    try {
+                        await reply('⬇️ Downloading TikTok video...');
+                        const data = await tiktok(q);
+                        if (!data?.no_watermark) {
+                            await reply('❌ Failed to download TikTok video');
+                            break;
+                        }
+
+                        const author = typeof data.author === 'object' ? (data.author?.nickname || data.author?.name) : data.author;
+                        const caption =
+                            `🎵 *${data.title || 'TikTok Video'}*\n\n` +
+                            `👤 Author: ${author || 'Unknown'}\n` +
+                            (data.runtime ? `⏱ Duration: ${data.runtime}s\n` : '') +
+                            `\n> ${cfg.BOT_FOOTER}`;
+
+                        await send(from, {
+                            video: { url: data.no_watermark },
+                            caption
+                        }, { quoted: msg });
+                    } catch (err) {
+                        console.error('TikTok error:', err.message);
+                        await reply('❌ Error while downloading TikTok video');
                     }
                     break;
                 }
