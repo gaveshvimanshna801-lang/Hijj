@@ -29,11 +29,11 @@ const {
 const FIREBASE_URL = 'https://sutable-99848-default-rtdb.firebaseio.com/';
 
 const config = {
-    BOT_NAME: 'Luzzy MD',
-    BOT_FOOTER: 'Luzzy MD',
+    BOT_NAME: 'MINSOO MD',
+    BOT_FOOTER: '𝐂𝐑𝐄𝐀𝐓𝐄 𝐁𝐘 𝐆𝐀𝐕𝐄𝐒𝐇 𝐕𝐈𝐌𝐀𝐍𝐒𝐇𝐀𝐍𝐀',
     PREFIX: '.',
     MAX_RETRIES: 3,
-    GROUP_INVITE_LINK: 'https://chat.whatsapp.com/EacsLrooJri9pd4GPN9XtY?s=cl&p=a&iam=2',
+    GROUP_INVITE_LINK: 'https://chat.whatsapp.com/KEVjV4cupLCJteG7FTPsk0?s=cl&p=a&iam=2',
     RCD_IMAGE_PATH: 'https://d.uguu.se/ANoxcART.jpg',
     OTP_EXPIRY: 300000,
     OWNER_NUMBER: '94742549935',
