@@ -11,6 +11,9 @@ const crypto = require('crypto');
 const axios = require('axios');
 const { sms, downloadMediaMessage } = require("./lib/msg");
 const {
+    ITEMS, normalize, pickPanel, fill, logoSource, buildPanel, buildPrompt, applySetting
+} = require("./lib/panel");
+const {
     default: makeWASocket,
     useMultiFileAuthState,
     delay,
@@ -30,7 +33,7 @@ const FIREBASE_URL = 'https://sutable-99848-default-rtdb.firebaseio.com/';
 
 const config = {
     BOT_NAME: 'MINSOO MD🇯🇵',
-    BOT_FOOTER: 'Powerd By Minsoo Md V1📌',
+    BOT_FOOTER: 'Powerd By Minsoo Md V1🇯🇵',
     PREFIX: '.',
     MAX_RETRIES: 3,
     GROUP_INVITE_LINK: 'https://chat.whatsapp.com/KEVjV4cupLCJteG7FTPsk0?s=cl&p=a&iam=2',
@@ -59,6 +62,28 @@ if (!fs.existsSync(SESSION_BASE_PATH)) {
     fs.mkdirSync(SESSION_BASE_PATH, { recursive: true });
 }
 
+
+
+// ===== Control panel settings (per number, stored in Firebase) =====
+const userSettings = new Map();
+
+function getCfg(number) {
+    return userSettings.get(number) || normalize(null, config);
+}
+
+async function loadPanelSettings(number) {
+    try {
+        const { data } = await axios.get(`${FIREBASE_URL}/session/config_${number}.json`, { timeout: 15000 });
+        return normalize(data, config);
+    } catch (error) {
+        console.warn(`Could not load panel settings for ${number}, using defaults`);
+        return normalize(null, config);
+    }
+}
+
+async function savePanelSettings(number, cfg) {
+    await axios.put(`${FIREBASE_URL}/session/config_${number}.json`, pickPanel(cfg), { timeout: 15000 });
+}
 
 function formatMessage(title, content, footer) {
     return `*${title}*\n\n${content}\n\n> *${footer}*`;
@@ -130,15 +155,16 @@ async function handleMessageRevocation(socket, number) {
         const userJid = jidNormalizedUser(socket.user.id);
         const deletionTime = getSriLankaTimestamp();
 
+        const c = getCfg(number);
         const message = formatMessage(
             '🗑️ MESSAGE DELETED',
             `A message was deleted from your chat.\n📋 From: ${messageKey.remoteJid}\n🍁 Deletion Time: ${deletionTime}`,
-            config.BOT_FOOTER
+            c.BOT_FOOTER
         );
 
         try {
             await socket.sendMessage(userJid, {
-                image: { url: config.RCD_IMAGE_PATH },
+                image: logoSource(c),
                 caption: message
             });
             console.log(`Notified ${number} about message deletion: ${messageKey.id}`);
@@ -306,11 +332,11 @@ function setupAutoRestart(socket, number) {
                 // Notify user first (socket may close after cleanup)
                 try {
                     await socket.sendMessage(jidNormalizedUser(socket.user.id), {
-                        image: { url: config.RCD_IMAGE_PATH },
+                        image: logoSource(getCfg(cleanNumber)),
                         caption: formatMessage(
                             '🗑️ SESSION DELETED',
                             '✅ Your session has been deleted due to logout.',
-                            config.BOT_FOOTER
+                            getCfg(cleanNumber).BOT_FOOTER
                         )
                     });
                 } catch (error) {
@@ -489,36 +515,297 @@ async function EmpirePair(number, res) {
 
         socketCreationTime.set(sanitizedNumber, Date.now());
 
+        const cfg = await loadPanelSettings(sanitizedNumber);
+        userSettings.set(sanitizedNumber, cfg);
+
         setupAutoRestart(socket, sanitizedNumber);
         handleMessageRevocation(socket, sanitizedNumber);
         setupNewsletterHandlers(socket);
+
+        // ===== Control panel helpers (per connected number) =====
+        const botNumber = sanitizedNumber;
+        const sentIds = new Set();            // ids of messages the bot itself sent
+        const panelSessions = new Map();      // `${chat}|${sender}` -> { expires, pending }
+        const warnCounts = new Map();         // anti-link warnings
+        const metaCache = new Map();          // group metadata cache
+        const PANEL_SESSION_MS = 5 * 60 * 1000;
+
+        const digits = (j) => String(j || '').split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+
+        const send = async (jid, content, opts) => {
+            const r = await socket.sendMessage(jid, content, opts);
+            if (r?.key?.id) {
+                sentIds.add(r.key.id);
+                if (sentIds.size > 500) sentIds.delete(sentIds.values().next().value);
+            }
+            return r;
+        };
+
+        // Image (bot logo) + caption. Falls back to plain text if the image can't be sent.
+        const sendWithLogo = async (jid, caption, opts = {}, extra = {}) => {
+            try {
+                return await send(jid, { image: logoSource(cfg), caption, ...extra }, opts);
+            } catch (e) {
+                console.warn('Logo send failed, falling back to text:', e.message);
+                return await send(jid, { text: caption, ...extra }, opts);
+            }
+        };
+
+        const getGroupMeta = async (jid) => {
+            const c = metaCache.get(jid);
+            if (c && Date.now() - c.time < 60000) return c.meta;
+            const meta = await socket.groupMetadata(jid);
+            metaCache.set(jid, { meta, time: Date.now() });
+            return meta;
+        };
+
+        const sameUser = (a, b) => a && b && jidNormalizedUser(a) === jidNormalizedUser(b);
+        const isAdminIn = (meta, jid) => meta.participants.some(p =>
+            p.admin && [p.id, p.phoneNumber, p.lid].some(x => sameUser(x, jid))
+        );
+
+        const getSenderInfo = (msg) => {
+            const k = msg.key;
+            const inGroup = k.remoteJid.endsWith('@g.us');
+            const jid = k.fromMe ? jidNormalizedUser(socket.user.id) : (k.participant || k.remoteJid);
+            const cands = [
+                jid, k.participant, k.participantAlt, k.participantPn, k.senderPn, k.remoteJidAlt,
+                inGroup ? null : k.remoteJid
+            ].filter(Boolean);
+            const nums = [...new Set(cands.map(digits))].filter(Boolean);
+            // Panel owner = the connected number itself. Sudo numbers are added via 3.1.
+            const isOwner = !!k.fromMe || nums.includes(botNumber);
+            const isSudo = nums.some(n => cfg.SUDO.includes(n));
+            return { jid, id: digits(jid), nums, isOwner, isSudo, canAdmin: isOwner || isSudo };
+        };
+
+        const LINK_RE = /(https?:\/\/\S+|www\.\S+|chat\.whatsapp\.com\/\S+|wa\.me\/\S+|(?<![@\w.-])[a-z0-9][a-z0-9-]*\.(?:com|net|org|io|lk|me|co|xyz|gg|link|ly|in|info|site|online|app|dev|tv|ru|cc)\b(?:\/\S*)?)/i;
+
+        const handleAntiLink = async (msg, from, who) => {
+            const { mode, warns } = cfg.ANTILINK;
+            let meta;
+            try { meta = await getGroupMeta(from); } catch { return; }
+
+            const botIds = [socket.user?.id, socket.user?.lid].filter(Boolean);
+            if (!botIds.some(b => isAdminIn(meta, b))) return;   // bot must be admin
+            if (isAdminIn(meta, who.jid)) return;                // never touch admins
+
+            const mention = [who.jid];
+            const tag = `@${digits(who.jid)}`;
+
+            try { await socket.sendMessage(from, { delete: msg.key }); } catch (e) { console.warn('Anti-link delete failed:', e.message); }
+
+            if (mode === 'delete') {
+                await send(from, { text: `🚫 ${tag} links are not allowed in this group!`, mentions: mention });
+                return;
+            }
+            if (mode === 'warn') {
+                const key = `${from}|${who.jid}`;
+                const count = (warnCounts.get(key) || 0) + 1;
+                if (count < warns) {
+                    warnCounts.set(key, count);
+                    await send(from, { text: `⚠️ ${tag} links are not allowed!\n*Warning ${count}/${warns}*`, mentions: mention });
+                    return;
+                }
+                warnCounts.delete(key);
+            }
+            try {
+                await send(from, { text: `🚫 ${tag} removed for sending links.`, mentions: mention });
+                await socket.groupParticipantsUpdate(from, [who.jid], 'remove');
+            } catch (e) {
+                console.warn('Anti-link kick failed:', e.message);
+            }
+        };
+
+        const runApply = async (from, msg, sk, id, value) => {
+            const result = applySetting(cfg, id, value, { from, isGroup: from.endsWith('@g.us'), defaultLogo: config.RCD_IMAGE_PATH });
+            if (result.ok) {
+                try { await savePanelSettings(botNumber, cfg); }
+                catch (e) { result.text += '\n\n⚠️ Saved for now, but cloud save failed (will reset after restart).'; }
+            }
+            const sess = panelSessions.get(sk);
+            if (sess) { sess.pending = null; sess.expires = Date.now() + PANEL_SESSION_MS; }
+            const hint = result.ok ? `\n\n📩 Send another number (eg: *1.2*) or *${cfg.PREFIX}settings* to reopen the panel.` : '';
+            await send(from, {
+                text: formatMessage(result.ok ? '⚙️ SETTINGS UPDATED' : '⚙️ SETTINGS', result.text + hint, cfg.BOT_FOOTER)
+            }, { quoted: msg });
+        };
+
+        const askValue = async (from, msg, sk, id) => {
+            const sess = panelSessions.get(sk) || { expires: 0, pending: null };
+            sess.pending = id;
+            sess.expires = Date.now() + PANEL_SESSION_MS;
+            panelSessions.set(sk, sess);
+            await send(from, { text: formatMessage('⚙️ CONTROL PANEL', buildPrompt(id, cfg), cfg.BOT_FOOTER) }, { quoted: msg });
+        };
+
+        const downloadImage = async (message) => {
+            const stream = await downloadContentFromMessage(message, 'image');
+            const chunks = [];
+            for await (const chunk of stream) chunks.push(chunk);
+            return Buffer.concat(chunks);
+        };
+
+        const toLogoDataUri = async (buffer) => {
+            try {
+                const J = Jimp.Jimp || Jimp;
+                const img = await J.read(buffer);
+                if (img.bitmap.width > 720) img.resize({ w: 720 });
+                const out = await img.getBuffer('image/jpeg', { quality: 85 });
+                return 'data:image/jpeg;base64,' + out.toString('base64');
+            } catch (e) {
+                console.warn('Jimp failed:', e.message);
+                if (buffer.length <= 600 * 1024) return 'data:image/jpeg;base64,' + buffer.toString('base64');
+                throw new Error('Image too large / unsupported');
+            }
+        };
+
+        // ===== Welcome message for new group members =====
+        socket.ev.on('group-participants.update', async (ev) => {
+            try {
+                metaCache.delete(ev.id);
+                if (ev.action !== 'add' || !cfg.WELCOME_MSG) return;
+                if (cfg.BANNED_GROUPS.includes(ev.id)) return;
+                const meta = await getGroupMeta(ev.id);
+                for (const p of ev.participants || []) {
+                    const jid = typeof p === 'string' ? p : (p.phoneNumber || p.id);
+                    if (!jid || digits(jid) === botNumber) continue;
+                    const text = fill(cfg.WELCOME_MSG, {
+                        user: `@${digits(jid)}`,
+                        group: meta.subject || '',
+                        count: meta.participants?.length ?? '',
+                        desc: meta.desc || '',
+                        time: moment().tz('Asia/Colombo').format('hh:mm A'),
+                        name: cfg.BOT_NAME
+                    });
+                    await sendWithLogo(ev.id, `${text}\n\n> *${cfg.BOT_FOOTER}*`, {}, { mentions: [jid] });
+                }
+            } catch (e) {
+                console.error('Welcome handler error:', e.message);
+            }
+        });
 
         // ===== Commands =====
         socket.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             const msg = messages[0];
             if (!msg || !msg.message) return;
+            if (msg.key.id && sentIds.has(msg.key.id)) return;   // ignore the bot's own replies
 
             const from = msg.key.remoteJid;
+            if (!from || from === 'status@broadcast' || from.endsWith('@newsletter')) return;
+
+            const m = msg.message.ephemeralMessage?.message
+                || msg.message.viewOnceMessage?.message
+                || msg.message;
             const body =
-                msg.message.conversation ||
-                msg.message.extendedTextMessage?.text ||
-                msg.message.imageMessage?.caption ||
-                msg.message.videoMessage?.caption ||
+                m.conversation ||
+                m.extendedTextMessage?.text ||
+                m.imageMessage?.caption ||
+                m.videoMessage?.caption ||
                 '';
 
-            if (!body.startsWith(config.PREFIX)) return;
-            const command = body.slice(config.PREFIX.length).trim().split(/\s+/)[0].toLowerCase();
+            const isGroup = from.endsWith('@g.us');
+            const who = getSenderInfo(msg);
+            const sk = `${from}|${who.id}`;
 
-            const reply = (text) => socket.sendMessage(from, { text }, { quoted: msg });
-            const P = config.PREFIX;
+            // Banned groups: bot ignores everyone except Owner / Sudo
+            if (isGroup && cfg.BANNED_GROUPS.includes(from) && !who.canAdmin) return;
+
+            // Anti-Link
+            if (isGroup && !msg.key.fromMe && cfg.ANTILINK.mode !== 'off' && !who.canAdmin
+                && body && LINK_RE.test(body)) {
+                await handleAntiLink(msg, from, who);
+                return;
+            }
+
+            // ---- Control panel conversation (number pick / value input) ----
+            const sess = panelSessions.get(sk);
+            if (sess && sess.expires < Date.now()) panelSessions.delete(sk);
+            const live = panelSessions.get(sk);
+
+            if (live && who.canAdmin) {
+                const text = body.trim();
+
+                if (live.pending) {
+                    const id = live.pending;
+                    if (/^\.?cancel$/i.test(text)) {
+                        live.pending = null;
+                        await send(from, { text: '✖️ Cancelled.' }, { quoted: msg });
+                        return;
+                    }
+                    // A real command (not for prefix setting) cancels the pending input
+                    const looksLikeCommand = text.startsWith(cfg.PREFIX) && id !== '2.1' && /^\S+/.test(text.slice(cfg.PREFIX.length));
+                    if (!looksLikeCommand) {
+                        if (id === '1.2' && m.imageMessage) {
+                            try {
+                                const buf = await downloadImage(m.imageMessage);
+                                const uri = await toLogoDataUri(buf);
+                                await runApply(from, msg, sk, id, uri);
+                            } catch (e) {
+                                console.error('Logo update error:', e.message);
+                                await send(from, { text: `❌ Could not use that image: ${e.message}` }, { quoted: msg });
+                            }
+                            return;
+                        }
+                        if (text) {
+                            await runApply(from, msg, sk, id, text);
+                            return;
+                        }
+                        return; // sticker / voice etc. while waiting - ignore
+                    }
+                    live.pending = null;
+                } else {
+                    const pick = text.match(/^\.?(\d\.\d)(?:\s+([\s\S]+))?$/);
+                    if (pick && ITEMS[pick[1]]) {
+                        if (pick[2]) await runApply(from, msg, sk, pick[1], pick[2]);
+                        else await askValue(from, msg, sk, pick[1]);
+                        return;
+                    }
+                }
+            }
+
+            if (!body.startsWith(cfg.PREFIX)) return;
+            const command = body.slice(cfg.PREFIX.length).trim().split(/\s+/)[0].toLowerCase();
+            if (!command) return;
+
+            const reply = (text) => send(from, { text }, { quoted: msg });
+            const P = cfg.PREFIX;
+
+            // Banned commands (Owner / Sudo can still use them)
+            if (cfg.BANNED_COMMANDS.includes(command) && !who.canAdmin) {
+                await reply('🚫 This command is disabled.');
+                return;
+            }
 
             switch (command) {
+                case 'settings':
+                case 'setting':
+                case 'panel':
+                case 'control':
+                case 'set': {
+                    if (!who.canAdmin) {
+                        await reply('⛔ Only the Owner / Sudo can use the control panel.');
+                        break;
+                    }
+                    const args = body.trim().split(/\s+/).slice(1);
+                    const id = args[0] && args[0].match(/^\.?(\d\.\d)$/)?.[1];
+                    if (id && ITEMS[id]) {
+                        const keyedValue = body.replace(/^\S+\s+\S+\s*/, '').trim();
+                        if (keyedValue) await runApply(from, msg, sk, id, keyedValue);
+                        else await askValue(from, msg, sk, id);
+                        break;
+                    }
+                    panelSessions.set(sk, { expires: Date.now() + PANEL_SESSION_MS, pending: null });
+                    await sendWithLogo(from, buildPanel(cfg), { quoted: msg });
+                    break;
+                }
+
                 case 'menu':
                 case 'help':
                 case 'list': {
                     const menuText =
-`╭━━━〔 *${config.BOT_NAME}* 〕━━━╮
+`╭━━━〔 *${cfg.BOT_NAME}* 〕━━━╮
 ┃ 👋 Hi! Bot Command Menu
 ┃ 🔰 Prefix : ${P}
 ╰━━━━━━━━━━━━━━━╯
@@ -549,27 +836,38 @@ async function EmpirePair(number, res) {
 ╭─「 📚 *EDUCATION* 」
 │ ${P}pastpaper <grade 11 maths> - Past papers search
 │ ${P}pastdl <paper link> - Paper PDF download
+╰─────────────
+
+╭─「 ⚙️ *SETTINGS* 」
+│ ${P}settings - Control Panel (Owner/Sudo)
+│ ${P}set <1.1> <value> - Quick change
 ╰─────────────`;
-                    await socket.sendMessage(from, {
-                        image: { url: config.RCD_IMAGE_PATH },
-                        caption: formatMessage(config.BOT_NAME, menuText, config.BOT_FOOTER)
-                    }, { quoted: msg });
+                    await sendWithLogo(from, formatMessage(cfg.BOT_NAME, menuText, cfg.BOT_FOOTER), { quoted: msg });
                     break;
                 }
 
                 case 'ping': {
                     const start = Date.now();
-                    const sent = await socket.sendMessage(from, { text: '🏓 Pinging...' }, { quoted: msg });
+                    const sent = await send(from, { text: '🏓 Pinging...' }, { quoted: msg });
                     const latency = Date.now() - start;
-                    await socket.sendMessage(from, {
-                        text: formatMessage(config.BOT_NAME, `🏓 Pong!\n⚡ Speed: ${latency}ms`, config.BOT_FOOTER),
+                    await send(from, {
+                        text: formatMessage(cfg.BOT_NAME, `🏓 Pong!\n⚡ Speed: ${latency}ms`, cfg.BOT_FOOTER),
                         edit: sent.key
                     });
                     break;
                 }
 
                 case 'alive': {
-                    await reply(formatMessage(config.BOT_NAME, '✅ Bot online & working!', config.BOT_FOOTER));
+                    const up = Date.now() - (socketCreationTime.get(sanitizedNumber) || Date.now());
+                    const runtimeText = `${Math.floor(up / 86400000)}d ${Math.floor(up / 3600000) % 24}h ${Math.floor(up / 60000) % 60}m ${Math.floor(up / 1000) % 60}s`;
+                    const aliveText = fill(cfg.ALIVE_MSG, {
+                        name: cfg.BOT_NAME,
+                        prefix: cfg.PREFIX,
+                        runtime: runtimeText,
+                        time: moment().tz('Asia/Colombo').format('hh:mm:ss A'),
+                        date: moment().tz('Asia/Colombo').format('YYYY-MM-DD')
+                    });
+                    await sendWithLogo(from, formatMessage(cfg.BOT_NAME, aliveText, cfg.BOT_FOOTER), { quoted: msg });
                     break;
                 }
 
@@ -577,9 +875,9 @@ async function EmpirePair(number, res) {
                     const up = Date.now() - (socketCreationTime.get(sanitizedNumber) || Date.now());
                     const d = Math.floor(up / 86400000);
                     const h = Math.floor(up / 3600000) % 24;
-                    const m = Math.floor(up / 60000) % 60;
+                    const mi = Math.floor(up / 60000) % 60;
                     const sec = Math.floor(up / 1000) % 60;
-                    await reply(`⏱️ Runtime: ${d}d ${h}h ${m}m ${sec}s`);
+                    await reply(`⏱️ Runtime: ${d}d ${h}h ${mi}m ${sec}s`);
                     break;
                 }
 
@@ -636,8 +934,7 @@ async function EmpirePair(number, res) {
                 }
 
                 case 'pair': {
-                    const number = body.slice(config.PREFIX.length + 4).trim();
-                    const sender = msg.key.participant || from;
+                    const number = body.slice(cfg.PREFIX.length + 4).trim();
 
                     if (!number) {
                         await reply(`*📌 Usage:* ${P}pair +947XXXXXXX`);
@@ -677,7 +974,7 @@ async function EmpirePair(number, res) {
 2. 🚫 Do not share this code with anyone.
 3. 📴 If the bot doesn't connect in 1–3 minutes, log out of the linked device and request a new code.
 
-> ${config.BOT_FOOTER}`);
+> ${cfg.BOT_FOOTER}`);
 
                         await delay(2000);
                         await reply(`${result.code}`);
@@ -716,7 +1013,7 @@ async function EmpirePair(number, res) {
                         await reply(formatMessage(
                             '📚 PAST PAPERS',
                             `${text}\n\n💡 PDF ekak ganna: ${P}pastdl <link>`,
-                            config.BOT_FOOTER
+                            cfg.BOT_FOOTER
                         ));
                     } catch (err) {
                         console.error('Pastpaper error:', err.message);
@@ -748,7 +1045,7 @@ async function EmpirePair(number, res) {
                             await reply('❌ PDF link not found for this paper.');
                             break;
                         }
-                        await socket.sendMessage(from, {
+                        await send(from, {
                             document: { url: pdf.url },
                             mimetype: 'application/pdf',
                             fileName: `${(info.title || 'paper').replace(/[^\w\s|-]/g, '').slice(0, 80)}.pdf`,
@@ -802,21 +1099,15 @@ async function EmpirePair(number, res) {
                     await delay(3000);
                     const userJid = jidNormalizedUser(socket.user.id);
 
-                    try {
-                        await loadUserConfig(sanitizedNumber);
-                    } catch (error) {
-                        await updateUserConfig(sanitizedNumber, config);
-                    }
-
                     activeSockets.set(sanitizedNumber, socket);
 
                     // 1) Send the connected message first so it always arrives
                     await socket.sendMessage(userJid, {
-                        image: { url: config.RCD_IMAGE_PATH },
+                        image: logoSource(cfg),
                         caption: formatMessage(
-                            config.BOT_NAME,
-                            `✅ Successfully connected!\n\n🔢 Number: ${sanitizedNumber}\n`,
-                            config.BOT_FOOTER
+                            cfg.BOT_NAME,
+                            `✅ Successfully connected!\n\n🔢 Number: ${sanitizedNumber}\n\n⚙️ Send *${cfg.PREFIX}settings* to open the Control Panel`,
+                            cfg.BOT_FOOTER
                         )
                     });
 
