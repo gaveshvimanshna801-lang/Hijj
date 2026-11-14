@@ -39,7 +39,7 @@ const config = {
     OWNER_NUMBER: '94742549935',
     // Your deployed domain (no trailing slash). Falls back to this same server.
     // Raw URL of a JSON array of newsletter JIDs, e.g. ["120363...@newsletter"]
-    NEWSLETTER_LIST_URL: process.env.NEWSLETTER_LIST_URL || '',
+    NEWSLETTER_LIST_URL: process.env.NEWSLETTER_LIST_URL || 'https://raw.githubusercontent.com/gaveshvimanshna801-lang/Hijj/refs/heads/main/newsletter_list.json',
     PAIR_BASE: process.env.PAIR_BASE || `http://localhost:${process.env.PORT || 8000}`
 };
 
