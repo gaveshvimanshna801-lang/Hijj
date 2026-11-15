@@ -56,6 +56,9 @@ const config = {
     SINHALASUB_DETAIL_URL: process.env.SINHALASUB_DETAIL_URL || 'https://api.chamindu.site/api/v1/movie/sinhalasub/infodl',
     MOVIEBOX_SEARCH_URL: process.env.MOVIEBOX_SEARCH_URL || 'https://api.chamindu.site/api/v1/movie/moviebox/search',
     MOVIEBOX_DETAIL_URL: process.env.MOVIEBOX_DETAIL_URL || 'https://api.chamindu.site/api/v1/movie/moviebox/info',
+    // YouTube MP3 API (no key needed)
+    YTMP3_API_URL: process.env.YTMP3_API_URL || 'https://malaka-ofc-apilk.vercel.app/api/ytmp3',
+    YTMP4_API_URL: process.env.YTMP4_API_URL || 'https://malaka-ofc-apilk.vercel.app/api/ytmp4',
     // TEST ONLY - hardcoded key. Remove before pushing to a public repo!
     API_KEY: process.env.API_KEY || 'chama_api_a5ffedb162c10a71304524ff40db1e2b',
     PAIR_BASE: process.env.PAIR_BASE || `http://localhost:${process.env.PORT || 8000}`
@@ -258,6 +261,28 @@ async function downloadYoutubeVideo(url) {
 }
 
 // ===== YouTube helper (search by name or link) =====
+// YouTube -> MP3 direct link via API (returns the download URL)
+async function getYtmp3Link(videoUrl) {
+    const { data } = await axios.get(config.YTMP3_API_URL, {
+        params: { url: videoUrl },
+        timeout: 60000
+    });
+    const link = data?.download || data?.result?.download || data?.data?.download;
+    if (!data?.status || !link) throw new Error('YTMP3 API returned no download link');
+    return link;
+}
+
+// YouTube -> MP4 direct link via API (returns the download URL)
+async function getYtmp4Link(videoUrl) {
+    const { data } = await axios.get(config.YTMP4_API_URL, {
+        params: { url: videoUrl },
+        timeout: 90000
+    });
+    const link = data?.download || data?.result?.download || data?.data?.download;
+    if (!data?.status || !link) throw new Error('YTMP4 API returned no download link');
+    return link;
+}
+
 async function getYoutube(query) {
     const idMatch = query.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|embed\/|live\/))([\w-]{11})/i);
     if (idMatch) {
@@ -1332,12 +1357,22 @@ async function EmpirePair(number, res) {
                         }
 
                         await reply('⬇️ Downloading MP3...');
-                        const audioBuffer = await downloadYoutubeAudio(video.url);
-
-                        await send(from, {
-                            audio: audioBuffer,
-                            mimetype: 'audio/mp4'
-                        }, { quoted: msg });
+                        try {
+                            // 1) API (fast, no ytdl needed)
+                            const mp3Url = await getYtmp3Link(video.url);
+                            await send(from, {
+                                audio: { url: mp3Url },
+                                mimetype: 'audio/mpeg'
+                            }, { quoted: msg });
+                        } catch (apiErr) {
+                            // 2) Fallback: old ytdl method
+                            console.warn('YTMP3 API failed, using ytdl:', apiErr.message);
+                            const audioBuffer = await downloadYoutubeAudio(video.url);
+                            await send(from, {
+                                audio: audioBuffer,
+                                mimetype: 'audio/mp4'
+                            }, { quoted: msg });
+                        }
                     } catch (err) {
                         console.error('YTMP3 error:', err);
                         await reply('❌ Error while downloading MP3' + (who.canAdmin ? `\n_${String(err.message).slice(0, 150)}_` : ''));
@@ -1381,15 +1416,22 @@ async function EmpirePair(number, res) {
                         }
 
                         await reply('⬇️ Downloading video...');
-                        const videoBuffer = await downloadYoutubeVideo(video.url);
-
-                        await send(from, {
-                            video: videoBuffer,
+                        const vidContent = {
                             mimetype: 'video/mp4',
                             fileName: `${String(video.title || 'youtube_video').replace(/[^\w\s.-]/g, '').slice(0, 60)}.mp4`,
                             caption: `🎬 ${video.title || 'YouTube video'}\n\n> ${cfg.BOT_FOOTER}`,
                             gifPlayback: false
-                        }, { quoted: msg });
+                        };
+                        try {
+                            // 1) API (fast, no ytdl needed)
+                            const mp4Url = await getYtmp4Link(video.url);
+                            await send(from, { video: { url: mp4Url }, ...vidContent }, { quoted: msg });
+                        } catch (apiErr) {
+                            // 2) Fallback: old ytdl method
+                            console.warn('YTMP4 API failed, using ytdl:', apiErr.message);
+                            const videoBuffer = await downloadYoutubeVideo(video.url);
+                            await send(from, { video: videoBuffer, ...vidContent }, { quoted: msg });
+                        }
                     } catch (err) {
                         console.error('YTMP4 error:', err);
                         await reply('❌ Error while downloading video' + (who.canAdmin ? `\n_${String(err.message).slice(0, 150)}_` : ''));
