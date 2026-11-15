@@ -63,6 +63,133 @@ const config = {
 
 const PM2_NAME = process.env.PM2_NAME || 'LUZZY-MD';
 
+// ===== SS2: SinhalaSub.lk scraper (needs puppeteer, loaded lazily) =====
+let ss2Active = 0;
+const SS2_MAX_ACTIVE = 2;
+
+async function ss2Browser() {
+    let puppeteer;
+    try {
+        puppeteer = require('puppeteer');
+    } catch {
+        throw new Error('puppeteer is not installed');
+    }
+    return puppeteer.launch({
+        headless: true,
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+    });
+}
+
+async function ss2Run(fn) {
+    if (ss2Active >= SS2_MAX_ACTIVE) throw new Error('busy');
+    ss2Active++;
+    let browser;
+    try {
+        browser = await ss2Browser();
+        return await fn(browser);
+    } finally {
+        ss2Active--;
+        if (browser) await browser.close().catch(() => {});
+    }
+}
+
+function ss2Quality(text) {
+    if (!text) return 'HD';
+    const t = text.toUpperCase();
+    if (/1080|FHD/.test(t)) return '1080p';
+    if (/720|HD/.test(t)) return '720p';
+    if (/480|SD/.test(t)) return '480p';
+    return text.trim();
+}
+
+function ss2PixeldrainDirect(url) {
+    const m = String(url || '').match(/pixeldrain\.com\/(?:u|api\/file)\/(\w+)/);
+    return m ? `https://pixeldrain.com/api/file/${m[1]}?download` : url;
+}
+
+function ss2Search(query) {
+    return ss2Run(async (browser) => {
+        const page = await browser.newPage();
+        await page.goto(`https://sinhalasub.lk/?s=${encodeURIComponent(query)}&post_type=movies`, { waitUntil: 'networkidle2', timeout: 30000 });
+        return page.$$eval('.display-item .item-box', boxes =>
+            boxes.slice(0, 10).map(box => {
+                const a = box.querySelector('a');
+                const t = (sel) => (box.querySelector(sel)?.textContent || '').trim();
+                return {
+                    title: a?.title?.trim() || '',
+                    movieUrl: a?.href || '',
+                    language: t('.item-desc-giha .language'),
+                    quality: t('.item-desc-giha .quality'),
+                    qty: t('.item-desc-giha .qty')
+                };
+            }).filter(m => m.title && m.movieUrl)
+        );
+    });
+}
+
+function ss2Movie(movieUrl) {
+    return ss2Run(async (browser) => {
+        const page = await browser.newPage();
+        await page.goto(movieUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+
+        const metadata = await page.evaluate(() => {
+            const getText = el => el?.textContent.trim() || '';
+            const getList = sel => Array.from(document.querySelectorAll(sel)).map(el => el.textContent.trim());
+            let language = '', directors = [], stars = [];
+            document.querySelectorAll('.info-col p').forEach(p => {
+                const strong = p.querySelector('strong');
+                if (!strong) return;
+                const txt = strong.textContent.trim();
+                if (txt.includes('Language:')) language = strong.nextSibling?.textContent?.trim() || '';
+                if (txt.includes('Director:')) directors = Array.from(p.querySelectorAll('a')).map(a => a.textContent.trim());
+                if (txt.includes('Stars:')) stars = Array.from(p.querySelectorAll('a')).map(a => a.textContent.trim());
+            });
+            return {
+                title: getText(document.querySelector('.info-details .details-title h3')),
+                language,
+                duration: getText(document.querySelector(".info-details .data-views[itemprop='duration']")),
+                imdb: getText(document.querySelector('.info-details .data-imdb')).replace('IMDb:', '').trim(),
+                genres: getList('.details-genre a'),
+                directors,
+                stars,
+                thumbnail: document.querySelector('.splash-bg img')?.src || ''
+            };
+        });
+
+        const rows = await page.$$eval('.link-pixeldrain tbody tr', trs =>
+            trs.map(row => ({
+                pageLink: row.querySelector('.link-opt a')?.href || '',
+                quality: row.querySelector('.quality')?.textContent.trim() || '',
+                size: row.querySelector('td:nth-child(3) span')?.textContent.trim() || ''
+            })).filter(r => r.pageLink)
+        );
+
+        const links = [];
+        for (const r of rows) {
+            // WhatsApp max file size is 2GB
+            const sz = r.size.toUpperCase();
+            const mb = sz.includes('GB') ? parseFloat(sz) * 1024 : sz.includes('MB') ? parseFloat(sz) : 0;
+            if (mb > 2048) continue;
+            let sub;
+            try {
+                sub = await browser.newPage();
+                await sub.goto(r.pageLink, { waitUntil: 'networkidle2', timeout: 30000 });
+                const finalUrl = await sub
+                    .waitForSelector(".wait-done a[href^='https://pixeldrain.com/']", { timeout: 25000 })
+                    .then(el => el.evaluate(a => a.href))
+                    .catch(() => null);
+                if (finalUrl) links.push({ link: finalUrl, quality: ss2Quality(r.quality), size: r.size });
+            } catch (e) {
+                console.warn('SS2 link failed:', e.message);
+            } finally {
+                if (sub) await sub.close().catch(() => {});
+            }
+        }
+        return { metadata, links };
+    });
+}
+
 const activeSockets = new Map();
 const socketCreationTime = new Map();
 const SESSION_BASE_PATH = './session';
@@ -905,6 +1032,7 @@ async function EmpirePair(number, res) {
 │ ${P}movie <name> - Movie / series download links
 │ ${P}ss <name> - SinhalaSub movie / series (Sinhala subs)
 │ ${P}mb <name> - MovieBox movie / series
+│ ${P}ss2 <name> - SinhalaSub.lk (pixeldrain, max 2GB)
 ╰─────────────
 
 ╭─「 ⚙️ *SETTINGS* 」
@@ -1557,6 +1685,118 @@ async function EmpirePair(number, res) {
                         console.error(`${srcName} search error:`, err.message);
                         await reply('❌ Search failed. Please try again later.' + (who.canAdmin ? `\n_${String(err.message).slice(0, 150)}_` : ''));
                     }
+                    break;
+                }
+
+                case 'ss2': {
+                    const query = body.split(/\s+/).slice(1).join(' ').trim();
+                    if (!query) {
+                        await reply(`🎬 Usage: ${P}ss2 avengers`);
+                        break;
+                    }
+
+                    // Wait (5 min) for a number reply to a specific bot message
+                    const requester = msg.key.participant || from;
+                    const awaitPick = (listId, max, onPick) => {
+                        const handler = async ({ messages: rm }) => {
+                            const rmsg = rm?.[0];
+                            if (!rmsg?.message) return;
+                            const inner = rmsg.message.ephemeralMessage?.message || rmsg.message;
+                            const ext = inner.extendedTextMessage;
+                            if (ext?.contextInfo?.stanzaId !== listId) return;
+                            if (rmsg.key.remoteJid !== from) return;
+                            if ((rmsg.key.participant || rmsg.key.remoteJid) !== requester) return;
+
+                            const n = parseInt((ext.text || '').trim(), 10) - 1;
+                            if (isNaN(n) || n < 0 || n >= max) {
+                                await send(from, { text: `⚠️ Invalid choice! Send a number from 1 to ${max}.` }, { quoted: rmsg });
+                                return;
+                            }
+                            stop();
+                            try {
+                                await onPick(n, rmsg);
+                            } catch (err) {
+                                console.error('SS2 error:', err.message);
+                                await send(from, {
+                                    text: err.message === 'busy'
+                                        ? '⏳ Server is busy right now. Try again in a minute.'
+                                        : '❌ Something went wrong. Try again later.'
+                                }, { quoted: rmsg });
+                            }
+                        };
+                        const stop = () => socket.ev.off('messages.upsert', handler);
+                        socket.ev.on('messages.upsert', handler);
+                        setTimeout(stop, 5 * 60 * 1000);
+                    };
+
+                    let results;
+                    try {
+                        await reply('🔍 Searching SinhalaSub.lk ...');
+                        results = await ss2Search(query);
+                    } catch (err) {
+                        console.error('SS2 search error:', err.message);
+                        await reply(err.message === 'busy'
+                            ? '⏳ Server is busy right now. Try again in a minute.'
+                            : '❌ Search failed. Please try again later.' + (who.canAdmin ? `\n_${String(err.message).slice(0, 150)}_` : ''));
+                        break;
+                    }
+                    if (!results.length) {
+                        await reply('❌ No movies found!');
+                        break;
+                    }
+
+                    const listText = results
+                        .map((it, i) => `*${i + 1}.* ${it.title}\n   📝 ${it.language || 'N/A'}  📊 ${it.quality || 'N/A'}  🎞️ ${it.qty || 'N/A'}`)
+                        .join('\n');
+                    const listMsg = await send(from, {
+                        text: formatMessage('🎬 SS2 SEARCH', `${listText}\n\n📌 Reply to this message with a number (1-${results.length}).`, cfg.BOT_FOOTER)
+                    }, { quoted: msg });
+                    if (!listMsg?.key?.id) break;
+
+                    awaitPick(listMsg.key.id, results.length, async (n, rmsg) => {
+                        const sel = results[n];
+                        await send(from, { text: '⏳ Getting details & download links... (can take up to a minute)' }, { quoted: rmsg });
+
+                        const { metadata: md, links } = await ss2Movie(sel.movieUrl);
+                        const card = formatMessage(
+                            `🎬 ${md.title || sel.title}`,
+                            `📝 Language: ${md.language || 'N/A'}\n⏱️ Duration: ${md.duration || 'N/A'}\n⭐ IMDb: ${md.imdb || 'N/A'}\n🎭 Genres: ${md.genres.join(', ') || 'N/A'}\n🎥 Directors: ${md.directors.join(', ') || 'N/A'}\n🌟 Stars: ${md.stars.slice(0, 5).join(', ') || 'N/A'}${md.stars.length > 5 ? '...' : ''}`,
+                            cfg.BOT_FOOTER
+                        );
+                        try {
+                            if (!md.thumbnail) throw new Error('no poster');
+                            await send(from, { image: { url: md.thumbnail }, caption: card }, { quoted: rmsg });
+                        } catch {
+                            await send(from, { text: card }, { quoted: rmsg });
+                        }
+
+                        if (!links.length) {
+                            await send(from, { text: '❌ No download links found (under 2GB).' }, { quoted: rmsg });
+                            return;
+                        }
+                        const qText = links.map((d, i) => `*${i + 1}.* 💾 ${d.quality} - ${d.size}`).join('\n');
+                        const qMsg = await send(from, {
+                            text: formatMessage('📥 QUALITIES (max 2GB)', `${qText}\n\n📌 Reply to this message with a number to get the movie as a document.`, cfg.BOT_FOOTER)
+                        }, { quoted: rmsg });
+                        if (!qMsg?.key?.id) return;
+
+                        awaitPick(qMsg.key.id, links.length, async (qn, qrmsg) => {
+                            const dl = links[qn];
+                            const title = md.title || sel.title;
+                            await send(from, { text: `📤 Sending *${dl.quality}* ...\n_Large files can take a few minutes._` }, { quoted: qrmsg });
+                            try {
+                                await send(from, {
+                                    document: { url: ss2PixeldrainDirect(dl.link) },
+                                    mimetype: 'video/mp4',
+                                    fileName: `${title.slice(0, 50)} - ${dl.quality}.mp4`.replace(/[^\w\s.-]/gi, ''),
+                                    caption: formatMessage('🎬 MOVIE', `*${title}*\n📊 Quality: ${dl.quality}\n💾 Size: ${dl.size}\n\nEnjoy your movie! 🍿`, cfg.BOT_FOOTER)
+                                }, { quoted: qrmsg });
+                            } catch (sendErr) {
+                                console.error('SS2 upload error:', sendErr.message);
+                                await send(from, { text: `⚠️ Could not upload the file.\n\n🔗 Direct link:\n${ss2PixeldrainDirect(dl.link)}` }, { quoted: qrmsg });
+                            }
+                        });
+                    });
                     break;
                 }
 
