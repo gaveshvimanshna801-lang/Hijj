@@ -69,6 +69,35 @@ const config = {
 
 const PM2_NAME = process.env.PM2_NAME || 'LUZZY-MD';
 
+// ===== MB upload queue: uploads to the upload group run one at a time, in request order =====
+const mbQueue = [];
+let mbRunning = null;   // key of the upload currently running
+
+function mbQueueHas(key) {
+    return mbRunning === key || mbQueue.some(j => j.key === key);
+}
+
+function mbEnqueue(key, run) {
+    const position = mbQueue.length + (mbRunning ? 1 : 0) + 1;   // 1 = starts right away
+    mbQueue.push({ key, run });
+    mbRunNext();
+    return position;
+}
+
+async function mbRunNext() {
+    if (mbRunning) return;
+    while (mbQueue.length) {
+        const job = mbQueue.shift();
+        mbRunning = job.key;
+        try {
+            await job.run();
+        } catch (e) {
+            console.error('MB queue job failed:', e.message);
+        }
+        mbRunning = null;
+    }
+}
+
 // ===== SS2: SinhalaSub.lk scraper (needs puppeteer, loaded lazily) =====
 let ss2Active = 0;
 const SS2_MAX_ACTIVE = 2;
@@ -1721,20 +1750,46 @@ async function EmpirePair(number, res) {
                                 // .mb files go to the configured group (if set), everything else to this chat
                                 const toGroup = isMb && !!config.MB_GROUP_JID;
                                 const fileTarget = toGroup ? config.MB_GROUP_JID : from;
-                                await send(from, { text: `📤 Sending *${title}* (${dl.quality || 'HD'}) ${toGroup ? 'to the group' : ''}...\n_Large files can take a few minutes._` }, { quoted: qrmsg });
-                                try {
-                                    if (toGroup) await sendCard(movieCard, fileTarget);   // details card first
-                                    await send(fileTarget, {
-                                        document: { url: fileUrl },
-                                        mimetype: 'video/mp4',
-                                        fileName: `${title} (${dl.quality || 'HD'}).mp4`.replace(/[\\/:*?"<>|]/g, ''),
-                                        caption: formatMessage('🎬 MOVIE', `*${title}*\n📊 Quality: ${dl.quality || 'HD'}\n💾 Size: ${dl.size || 'Direct'}`, cfg.BOT_FOOTER)
-                                    }, toGroup ? {} : { quoted: qrmsg });
-                                    if (toGroup) await send(from, { text: `✅ *${title}* (${dl.quality || 'HD'}) was sent to the group.` }, { quoted: qrmsg });
-                                } catch (sendErr) {
-                                    console.error(`${srcName} upload error:`, sendErr.message);
-                                    await send(from, { text: `⚠️ Could not upload the file.\n\n🔗 Direct link:\n${fileUrl}` }, { quoted: qrmsg });
+                                const doUpload = async () => {
+                                    try {
+                                        if (toGroup) await sendCard(movieCard, fileTarget);   // details card first
+                                        await send(fileTarget, {
+                                            document: { url: fileUrl },
+                                            mimetype: 'video/mp4',
+                                            fileName: `${title} (${dl.quality || 'HD'}).mp4`.replace(/[\\/:*?"<>|]/g, ''),
+                                            caption: formatMessage('🎬 MOVIE', `*${title}*\n📊 Quality: ${dl.quality || 'HD'}\n💾 Size: ${dl.size || 'Direct'}`, cfg.BOT_FOOTER)
+                                        }, toGroup ? {} : { quoted: qrmsg });
+                                        if (toGroup) await send(from, { text: `✅ *${title}* (${dl.quality || 'HD'}) was sent to the upload group.` }, { quoted: qrmsg });
+                                    } catch (sendErr) {
+                                        console.error(`${srcName} upload error:`, sendErr.message);
+                                        await send(from, { text: `⚠️ Could not upload the file.\n\n🔗 Direct link:\n${fileUrl}` }, { quoted: qrmsg });
+                                    }
+                                };
+
+                                // Not the group flow: upload right away in this chat
+                                if (!toGroup) {
+                                    await send(from, { text: `📤 Sending *${title}* (${dl.quality || 'HD'}) ...\n_Large files can take a few minutes._` }, { quoted: qrmsg });
+                                    await doUpload();
+                                    return;
                                 }
+
+                                // Group flow: one upload at a time, in the order requested
+                                if (mbQueueHas(fileUrl)) {
+                                    await send(from, { text: `⚠️ *${title}* (${dl.quality || 'HD'}) is already in the upload queue.` }, { quoted: qrmsg });
+                                    return;
+                                }
+                                let myPosition = 0;
+                                myPosition = mbEnqueue(fileUrl, async () => {
+                                    if (myPosition > 1) {
+                                        await send(from, { text: `📤 It's your turn! Uploading *${title}* (${dl.quality || 'HD'}) to the group now...\n_Large files can take a few minutes._` }, { quoted: qrmsg });
+                                    }
+                                    await doUpload();
+                                });
+                                await send(from, {
+                                    text: myPosition > 1
+                                        ? `🕐 *${title}* (${dl.quality || 'HD'}) added to the upload queue.\n📍 Position: *${myPosition}*\n_It will start automatically after the earlier uploads finish._`
+                                        : `📤 Uploading *${title}* (${dl.quality || 'HD'}) to the group...\n_Large files can take a few minutes._`
+                                }, { quoted: qrmsg });
                             });
                         });
                     } catch (err) {
