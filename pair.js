@@ -36,7 +36,7 @@ const FIREBASE_URL = 'https://sutable-99848-default-rtdb.firebaseio.com/';
 
 const config = {
     BOT_NAME: 'MINSOO MD🇯🇵',
-    BOT_FOOTER: '🅼🅸🅽🆂🅾🅾 🅼🅳 🅼🅾🆅🅸🅴🇯🇵',
+    BOT_FOOTER: 'Powerd By Minsoo Md V1🇯🇵',
     PREFIX: '.',
     MAX_RETRIES: 3,
     GROUP_INVITE_LINK: 'https://chat.whatsapp.com/KEVjV4cupLCJteG7FTPsk0?s=cl&p=a&iam=2',
@@ -2221,4 +2221,15 @@ async function autoReconnectFromFirebase() {
         for (const number of numbers) {
             if (!activeSockets.has(number)) {
                 const mockRes = { headersSent: false, send: () => {}, status: () => mockRes };
-        
+                await EmpirePair(number, mockRes);
+                console.log(`🔁 Reconnected from Firebase: ${number}`);
+                await delay(1000);
+            }
+        }
+    } catch (error) {
+        console.error('❌ autoReconnectFromFirebase error:', error.message);
+    }
+}
+autoReconnectFromFirebase();
+
+module.exports = router;
