@@ -1665,12 +1665,13 @@ async function EmpirePair(number, res) {
                             const d = info?.data || {};
                             const title = d.title || item.title;
                             const poster = d.image || item.image;
-                            const sendCard = async (caption) => {
+                            const sendCard = async (caption, target = from) => {
+                                const opts = target === from ? { quoted: rmsg } : {};
                                 try {
                                     if (!poster) throw new Error('no poster');
-                                    await send(from, { image: { url: poster }, caption }, { quoted: rmsg });
+                                    await send(target, { image: { url: poster }, caption }, opts);
                                 } catch {
-                                    await send(from, { text: caption }, { quoted: rmsg });
+                                    await send(target, { text: caption }, opts);
                                 }
                             };
 
@@ -1694,11 +1695,12 @@ async function EmpirePair(number, res) {
                             // ---- Movie: details + quality list ----
                             const genres = Array.isArray(d.genres) ? d.genres.join(', ') : (d.genres || 'N/A');
                             const story = d.story ? (d.story.length > 220 ? d.story.slice(0, 220) + '...' : d.story) : 'N/A';
-                            await sendCard(formatMessage(
+                            const movieCard = formatMessage(
                                 '🎬 MOVIE DETAILS',
                                 `*${title}*\n⭐ IMDB: ${d.imdb || d.rating || 'N/A'}\n📅 Year: ${d.year || 'N/A'}\n⏳ Duration: ${d.duration || 'N/A'}\n🌍 Country: ${d.country || 'N/A'}\n🎭 Genres: ${genres}\n📝 Story: ${story}`,
                                 cfg.BOT_FOOTER
-                            ));
+                            );
+                            await sendCard(movieCard);
 
                             const downloads = d.downloads || [];
                             if (!downloads.length) {
@@ -1721,6 +1723,7 @@ async function EmpirePair(number, res) {
                                 const fileTarget = toGroup ? config.MB_GROUP_JID : from;
                                 await send(from, { text: `📤 Sending *${title}* (${dl.quality || 'HD'}) ${toGroup ? 'to the group' : ''}...\n_Large files can take a few minutes._` }, { quoted: qrmsg });
                                 try {
+                                    if (toGroup) await sendCard(movieCard, fileTarget);   // details card first
                                     await send(fileTarget, {
                                         document: { url: fileUrl },
                                         mimetype: 'video/mp4',
