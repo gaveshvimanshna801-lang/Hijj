@@ -35,8 +35,8 @@ const {
 const FIREBASE_URL = 'https://sutable-99848-default-rtdb.firebaseio.com/';
 
 const config = {
-    BOT_NAME: 'MINSOO MD🇯🇵👻',
-    BOT_FOOTER: 'Powerd By Minsoo Md V1🇯🇵',
+    BOT_NAME: 'MINSOO MD🇯🇵',
+    BOT_FOOTER: '🅼🅸🅽🆂🅾🅾 🅼🅳 🅼🅾🆅🅸🅴🇯🇵',
     PREFIX: '.',
     MAX_RETRIES: 3,
     GROUP_INVITE_LINK: 'https://chat.whatsapp.com/KEVjV4cupLCJteG7FTPsk0?s=cl&p=a&iam=2',
@@ -59,7 +59,8 @@ const config = {
     // YouTube MP3 API (no key needed)
     YTMP3_API_URL: process.env.YTMP3_API_URL || 'https://malaka-ofc-apilk.vercel.app/api/ytmp3',
     YTMP4_API_URL: process.env.YTMP4_API_URL || 'https://malaka-ofc-apilk.vercel.app/api/ytmp4',
-    // .mb movie files are sent to this group (e.g. '120363XXXXXXXXXXXX@g.us'). Empty = send in the same chat.
+    // .mb: requests are made in the REQUEST group, the movie file is uploaded to the UPLOAD group.
+    MB_REQUEST_JID: process.env.MB_REQUEST_JID || '120363432797199893@g.us',
     MB_GROUP_JID: process.env.MB_GROUP_JID || '120363430077737893@g.us',
     // TEST ONLY - hardcoded key. Remove before pushing to a public repo!
     API_KEY: process.env.API_KEY || 'chama_api_a5ffedb162c10a71304524ff40db1e2b',
@@ -1589,6 +1590,10 @@ async function EmpirePair(number, res) {
                         break;
                     }
                     const isMb = command === 'moviebox' || command === 'mb';
+                    if (isMb && config.MB_REQUEST_JID && from !== config.MB_REQUEST_JID && !who.canAdmin) {
+                        await reply('⚠️ Please use this command in the movie request group.');
+                        break;
+                    }
                     const srcName = isMb ? 'MovieBox' : 'SinhalaSub';
                     const searchUrl = isMb ? config.MOVIEBOX_SEARCH_URL : config.SINHALASUB_SEARCH_URL;
                     const detailUrl = isMb ? config.MOVIEBOX_DETAIL_URL : config.SINHALASUB_DETAIL_URL;
@@ -2216,15 +2221,4 @@ async function autoReconnectFromFirebase() {
         for (const number of numbers) {
             if (!activeSockets.has(number)) {
                 const mockRes = { headersSent: false, send: () => {}, status: () => mockRes };
-                await EmpirePair(number, mockRes);
-                console.log(`🔁 Reconnected from Firebase: ${number}`);
-                await delay(1000);
-            }
-        }
-    } catch (error) {
-        console.error('❌ autoReconnectFromFirebase error:', error.message);
-    }
-}
-autoReconnectFromFirebase();
-
-module.exports = router;
+        
