@@ -35,8 +35,8 @@ const {
 const FIREBASE_URL = 'https://sutable-99848-default-rtdb.firebaseio.com/';
 
 const config = {
-    BOT_NAME: 'MINSOO MD🇯🇵',
-    BOT_FOOTER: 'Powerd By Minsoo Md V1🇯🇵',
+    BOT_NAME: 'MINSOO MD REQUEST BOT🇯🇵🔥',
+    BOT_FOOTER: '╭━━〔 MINSOO MD REQUEST BOT🔥 〕━━╮\n┃ ✦ Powered by MINSOO MD -V1-\n┃ ✦ Created by  Vimanshana\n╰━━━━━━━━━━━━━━╯',
     PREFIX: '.',
     MAX_RETRIES: 3,
     GROUP_INVITE_LINK: 'https://chat.whatsapp.com/KEVjV4cupLCJteG7FTPsk0?s=cl&p=a&iam=2',
@@ -60,14 +60,20 @@ const config = {
     YTMP3_API_URL: process.env.YTMP3_API_URL || 'https://malaka-ofc-apilk.vercel.app/api/ytmp3',
     YTMP4_API_URL: process.env.YTMP4_API_URL || 'https://malaka-ofc-apilk.vercel.app/api/ytmp4',
     // .mb: requests are made in the REQUEST group, the movie file is uploaded to the UPLOAD group.
+    // (Both can be changed later from the control panel: .settings -> 4.2 / 4.3)
     MB_REQUEST_JID: process.env.MB_REQUEST_JID || '120363432797199893@g.us',
-    MB_GROUP_JID: process.env.MB_GROUP_JID || '120363430077737893@g.us',
+    MB_UPLOAD_JID: process.env.MB_UPLOAD_JID || '120363430077737893@g.us',
+    // Daily movie requests per user (0 = unlimited). Change from the panel: .settings -> 4.1
+    MB_DAILY_LIMIT: parseInt(process.env.MB_DAILY_LIMIT ?? '3', 10) || 0,
+    // MB-only mode: the bot only answers .mb, .menu and .settings. Set MB_ONLY=false to bring the other commands back.
+    MB_ONLY: process.env.MB_ONLY !== 'false',
     // TEST ONLY - hardcoded key. Remove before pushing to a public repo!
     API_KEY: process.env.API_KEY || 'chama_api_a5ffedb162c10a71304524ff40db1e2b',
     PAIR_BASE: process.env.PAIR_BASE || `http://localhost:${process.env.PORT || 8000}`
 };
 
 const PM2_NAME = process.env.PM2_NAME || 'LUZZY-MD';
+const MB_ALLOWED_COMMANDS = ['mb', 'moviebox', 'menu', 'help', 'list', 'settings', 'setting', 'panel', 'control', 'set'];
 
 // ===== MB upload queue: uploads to the upload group run one at a time, in request order =====
 const mbQueue = [];
@@ -96,6 +102,36 @@ async function mbRunNext() {
         }
         mbRunning = null;
     }
+}
+
+// ===== MB daily request limit (per user, per day in Sri Lanka time; saved in Firebase) =====
+const mbUsageCache = new Map();   // `${date}|${user}` -> count
+
+const mbToday = () => moment().tz('Asia/Colombo').format('YYYY-MM-DD');
+
+async function mbGetUsage(user) {
+    const day = mbToday();
+    const key = `${day}|${user}`;
+    if (mbUsageCache.has(key)) return mbUsageCache.get(key);
+    let n = 0;
+    try {
+        const { data } = await axios.get(`${FIREBASE_URL}/mb_usage/${day}/${user}.json`, { timeout: 10000 });
+        n = parseInt(data, 10) || 0;
+    } catch (e) {
+        console.warn('MB usage read failed:', e.message);
+    }
+    mbUsageCache.set(key, n);
+    return n;
+}
+
+async function mbAddUsage(user) {
+    const day = mbToday();
+    const n = (await mbGetUsage(user)) + 1;
+    mbUsageCache.set(`${day}|${user}`, n);
+    for (const k of mbUsageCache.keys()) if (!k.startsWith(day + '|')) mbUsageCache.delete(k);   // drop old days
+    axios.put(`${FIREBASE_URL}/mb_usage/${day}/${user}.json`, n, { timeout: 10000 })
+        .catch(e => console.warn('MB usage save failed:', e.message));
+    return n;
 }
 
 // ===== SS2: SinhalaSub.lk scraper (needs puppeteer, loaded lazily) =====
@@ -325,8 +361,14 @@ async function getYoutube(query) {
     return search.videos[0];
 }
 
+// Boxed (multi-line) footers go in as they are; single-line footers keep the quote style
+function footerTail(footer) {
+    const f = String(footer || '');
+    return f.includes('\n') ? f : `> *${f}*`;
+}
+
 function formatMessage(title, content, footer) {
-    return `*${title}*\n\n${content}\n\n> *${footer}*`;
+    return `*${title}*\n\n${content}\n\n${footerTail(footer)}`;
 }
 
 function generateOTP() {
@@ -918,7 +960,7 @@ async function EmpirePair(number, res) {
                         time: moment().tz('Asia/Colombo').format('hh:mm A'),
                         name: cfg.BOT_NAME
                     });
-                    await sendWithLogo(ev.id, `${text}\n\n> *${cfg.BOT_FOOTER}*`, {}, { mentions: [jid] });
+                    await sendWithLogo(ev.id, `${text}\n\n${footerTail(cfg.BOT_FOOTER)}`, {}, { mentions: [jid] });
                 }
             } catch (e) {
                 console.error('Welcome handler error:', e.message);
@@ -1018,6 +1060,9 @@ async function EmpirePair(number, res) {
                 return;
             }
 
+            // MB-only mode: everything except .mb / .menu / .settings is ignored
+            if (config.MB_ONLY && !MB_ALLOWED_COMMANDS.includes(command)) return;
+
             switch (command) {
                 case 'settings':
                 case 'setting':
@@ -1044,58 +1089,9 @@ async function EmpirePair(number, res) {
                 case 'menu':
                 case 'help':
                 case 'list': {
+                    const limitTxt = cfg.MB_DAILY_LIMIT > 0 ? `${cfg.MB_DAILY_LIMIT} requests per user / day` : 'Unlimited';
                     const menuText =
-`╭━━━〔 *${cfg.BOT_NAME}* 〕━━━╮
-┃ 👋 Hi! Bot Command Menu
-┃ 🔰 Prefix : ${P}
-╰━━━━━━━━━━━━━━━╯
-
-╭─「 🤖 *BOT* 」
-│ ${P}menu  - සියලු commands
-│ ${P}ping  - Bot speed
-│ ${P}alive - Bot online ද බලන්න
-│ ${P}runtime - Bot run වුණ කාලය
-╰─────────────
-
-╭─「 🛠️ *TOOLS* 」
-│ ${P}time  - ශ්‍රී ලංකා වෙලාව
-│ ${P}date  - අද දිනය
-│ ${P}id    - Chat / User ID
-│ ${P}owner - Owner number
-│ ${P}repeat <text> - Text repeat
-│ ${P}calc <2+2> - Calculator
-│ ${P}flip  - Coin flip
-│ ${P}dice  - Dice roll
-╰─────────────
-
-╭─「 👥 *GROUP* 」
-│ ${P}group - Group link
-│ ${P}pair +947XXXXXXX - Pairing code
-╰─────────────
-
-╭─「 📥 *DOWNLOAD* 」
-│ ${P}fb <facebook link> - Facebook video download
-│ ${P}song <name/link> - YouTube MP3
-│ ${P}video <name/link> - YouTube MP4
-│ ${P}tiktok <link> - TikTok video (no watermark)
-╰─────────────
-
-╭─「 📚 *EDUCATION* 」
-│ ${P}pastpaper <grade 11 maths> - Past papers search
-│ ${P}pastdl <paper link> - Paper PDF download
-╰─────────────
-
-╭─「 🎬 *MOVIES* 」
-│ ${P}movie <name> - Movie / series download links
-│ ${P}ss <name> - SinhalaSub movie / series (Sinhala subs)
-│ ${P}mb <name> - MovieBox movie / series
-│ ${P}ss2 <name> - SinhalaSub.lk (pixeldrain, max 2GB)
-╰─────────────
-
-╭─「 ⚙️ *SETTINGS* 」
-│ ${P}settings - Control Panel (Owner/Sudo)
-│ ${P}set <1.1> <value> - Quick change
-╰─────────────`;
+`╭━━━〔 *${cfg.BOT_NAME}* 〕━━━╮\n┃ 🎬 Movie Request System\n┃ 🔰 Prefix : ${P}\n╰━━━━━━━━━━━━━━━╯\n\n╭─「 🎬 *MOVIES* 」\n│ ${P}mb <name> - Request a movie / series\n│ 📊 Limit : ${limitTxt}\n╰─────────────\n\n╭─「 ⚙️ *SETTINGS* 」\n│ ${P}settings - Control Panel (Owner/Sudo)\n│ ${P}set 4.1 <number> - Daily user limit\n│ ${P}set 4.2 here - Request group\n│ ${P}set 4.3 here - Upload group\n╰─────────────`;
                     await sendWithLogo(from, formatMessage(cfg.BOT_NAME, menuText, cfg.BOT_FOOTER), { quoted: msg });
                     break;
                 }
@@ -1619,7 +1615,7 @@ async function EmpirePair(number, res) {
                         break;
                     }
                     const isMb = command === 'moviebox' || command === 'mb';
-                    if (isMb && config.MB_REQUEST_JID && from !== config.MB_REQUEST_JID && !who.canAdmin) {
+                    if (isMb && cfg.MB_REQUEST_JID && from !== cfg.MB_REQUEST_JID && !who.canAdmin) {
                         await reply('⚠️ Please use this command in the movie request group.');
                         break;
                     }
@@ -1629,6 +1625,19 @@ async function EmpirePair(number, res) {
 
                     // Wait (5 min) for a number reply to a specific bot message
                     const requester = msg.key.participant || from;
+                    // who asked: used for the "Requested by @user" mention (prefers the phone-number JID)
+                    const reqJid = msg.key.participantAlt || msg.key.participantPn || msg.key.participant
+                        || (msg.key.fromMe ? jidNormalizedUser(socket.user.id) : from);
+                    const userKey = String(reqJid).split('@')[0].split(':')[0];
+                    const reqTag = '@' + userKey;
+                    const limited = isMb && cfg.MB_DAILY_LIMIT > 0 && !who.canAdmin;
+                    if (limited) {
+                        const used = await mbGetUsage(userKey);
+                        if (used >= cfg.MB_DAILY_LIMIT) {
+                            await send(from, { text: `⛔ ${reqTag} your daily limit is over (${used}/${cfg.MB_DAILY_LIMIT}).\nPlease try again tomorrow.`, mentions: [reqJid] }, { quoted: msg });
+                            break;
+                        }
+                    }
                     const awaitPick = (listId, max, onPick) => {
                         const handler = async ({ messages: rm }) => {
                             const rmsg = rm?.[0];
@@ -1694,13 +1703,13 @@ async function EmpirePair(number, res) {
                             const d = info?.data || {};
                             const title = d.title || item.title;
                             const poster = d.image || item.image;
-                            const sendCard = async (caption, target = from) => {
+                            const sendCard = async (caption, target = from, mentions = []) => {
                                 const opts = target === from ? { quoted: rmsg } : {};
                                 try {
                                     if (!poster) throw new Error('no poster');
-                                    await send(target, { image: { url: poster }, caption }, opts);
+                                    await send(target, { image: { url: poster }, caption, mentions }, opts);
                                 } catch {
-                                    await send(target, { text: caption }, opts);
+                                    await send(target, { text: caption, mentions }, opts);
                                 }
                             };
 
@@ -1724,11 +1733,10 @@ async function EmpirePair(number, res) {
                             // ---- Movie: details + quality list ----
                             const genres = Array.isArray(d.genres) ? d.genres.join(', ') : (d.genres || 'N/A');
                             const story = d.story ? (d.story.length > 220 ? d.story.slice(0, 220) + '...' : d.story) : 'N/A';
-                            const movieCard = formatMessage(
-                                '🎬 MOVIE DETAILS',
-                                `*${title}*\n⭐ IMDB: ${d.imdb || d.rating || 'N/A'}\n📅 Year: ${d.year || 'N/A'}\n⏳ Duration: ${d.duration || 'N/A'}\n🌍 Country: ${d.country || 'N/A'}\n🎭 Genres: ${genres}\n📝 Story: ${story}`,
-                                cfg.BOT_FOOTER
-                            );
+                            const movieBody = `*${title}*\n⭐ IMDB: ${d.imdb || d.rating || 'N/A'}\n📅 Year: ${d.year || 'N/A'}\n⏳ Duration: ${d.duration || 'N/A'}\n🌍 Country: ${d.country || 'N/A'}\n🎭 Genres: ${genres}\n📝 Story: ${story}`;
+                            const movieCard = formatMessage('🎬 MOVIE DETAILS', movieBody, cfg.BOT_FOOTER);
+                            // card for the upload group: also says who requested it
+                            const movieCardGroup = formatMessage('🎬 MOVIE DETAILS', `${movieBody}\n\n👤 *Requested by:* ${reqTag}`, cfg.BOT_FOOTER);
                             await sendCard(movieCard);
 
                             const downloads = d.downloads || [];
@@ -1748,18 +1756,25 @@ async function EmpirePair(number, res) {
                                 const dl = downloads[qn];
                                 const fileUrl = dl.link || dl.download_link || dl.direct_link;
                                 // .mb files go to the configured group (if set), everything else to this chat
-                                const toGroup = isMb && !!config.MB_GROUP_JID;
-                                const fileTarget = toGroup ? config.MB_GROUP_JID : from;
+                                const toGroup = isMb && !!cfg.MB_UPLOAD_JID;
+                                const fileTarget = toGroup ? cfg.MB_UPLOAD_JID : from;
+                                // daily limit check again (the user may have several lists open)
+                                if (limited && (await mbGetUsage(userKey)) >= cfg.MB_DAILY_LIMIT) {
+                                    await send(from, { text: `⛔ ${reqTag} your daily limit is over (${cfg.MB_DAILY_LIMIT}/${cfg.MB_DAILY_LIMIT}).\nPlease try again tomorrow.`, mentions: [reqJid] }, { quoted: qrmsg });
+                                    return;
+                                }
+
                                 const doUpload = async () => {
                                     try {
-                                        if (toGroup) await sendCard(movieCard, fileTarget);   // details card first
+                                        if (toGroup) await sendCard(movieCardGroup, fileTarget, [reqJid]);   // details card first
                                         await send(fileTarget, {
                                             document: { url: fileUrl },
                                             mimetype: 'video/mp4',
                                             fileName: `${title} (${dl.quality || 'HD'}).mp4`.replace(/[\\/:*?"<>|]/g, ''),
-                                            caption: formatMessage('🎬 MOVIE', `*${title}*\n📊 Quality: ${dl.quality || 'HD'}\n💾 Size: ${dl.size || 'Direct'}`, cfg.BOT_FOOTER)
+                                            caption: formatMessage('🎬 MOVIE', `*${title}*\n📊 Quality: ${dl.quality || 'HD'}\n💾 Size: ${dl.size || 'Direct'}${toGroup ? `\n\n👤 Requested by: ${reqTag}` : ''}`, cfg.BOT_FOOTER),
+                                            mentions: toGroup ? [reqJid] : []
                                         }, toGroup ? {} : { quoted: qrmsg });
-                                        if (toGroup) await send(from, { text: `✅ *${title}* (${dl.quality || 'HD'}) was sent to the upload group.` }, { quoted: qrmsg });
+                                        if (toGroup) await send(from, { text: `✅ ${reqTag} *${title}* (${dl.quality || 'HD'}) was sent to the upload group.`, mentions: [reqJid] }, { quoted: qrmsg });
                                     } catch (sendErr) {
                                         console.error(`${srcName} upload error:`, sendErr.message);
                                         await send(from, { text: `⚠️ Could not upload the file.\n\n🔗 Direct link:\n${fileUrl}` }, { quoted: qrmsg });
@@ -1768,6 +1783,7 @@ async function EmpirePair(number, res) {
 
                                 // Not the group flow: upload right away in this chat
                                 if (!toGroup) {
+                                    if (limited) await mbAddUsage(userKey);
                                     await send(from, { text: `📤 Sending *${title}* (${dl.quality || 'HD'}) ...\n_Large files can take a few minutes._` }, { quoted: qrmsg });
                                     await doUpload();
                                     return;
@@ -1778,17 +1794,20 @@ async function EmpirePair(number, res) {
                                     await send(from, { text: `⚠️ *${title}* (${dl.quality || 'HD'}) is already in the upload queue.` }, { quoted: qrmsg });
                                     return;
                                 }
+                                const usedNow = limited ? await mbAddUsage(userKey) : 0;
+                                const usageLine = limited ? `\n📊 Today: *${usedNow}/${cfg.MB_DAILY_LIMIT}* requests` : '';
                                 let myPosition = 0;
                                 myPosition = mbEnqueue(fileUrl, async () => {
                                     if (myPosition > 1) {
-                                        await send(from, { text: `📤 It's your turn! Uploading *${title}* (${dl.quality || 'HD'}) to the group now...\n_Large files can take a few minutes._` }, { quoted: qrmsg });
+                                        await send(from, { text: `📤 ${reqTag} it's your turn! Uploading *${title}* (${dl.quality || 'HD'}) to the group now...\n_Large files can take a few minutes._`, mentions: [reqJid] }, { quoted: qrmsg });
                                     }
                                     await doUpload();
                                 });
                                 await send(from, {
                                     text: myPosition > 1
-                                        ? `🕐 *${title}* (${dl.quality || 'HD'}) added to the upload queue.\n📍 Position: *${myPosition}*\n_It will start automatically after the earlier uploads finish._`
-                                        : `📤 Uploading *${title}* (${dl.quality || 'HD'}) to the group...\n_Large files can take a few minutes._`
+                                        ? `🕐 ${reqTag} *${title}* (${dl.quality || 'HD'}) added to the upload queue.\n📍 Position: *${myPosition}*\n_It will start automatically after the earlier uploads finish._${usageLine}`
+                                        : `📤 ${reqTag} uploading *${title}* (${dl.quality || 'HD'}) to the group...\n_Large files can take a few minutes._${usageLine}`,
+                                    mentions: [reqJid]
                                 }, { quoted: qrmsg });
                             });
                         });
