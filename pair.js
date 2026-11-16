@@ -59,6 +59,8 @@ const config = {
     // YouTube MP3 API (no key needed)
     YTMP3_API_URL: process.env.YTMP3_API_URL || 'https://malaka-ofc-apilk.vercel.app/api/ytmp3',
     YTMP4_API_URL: process.env.YTMP4_API_URL || 'https://malaka-ofc-apilk.vercel.app/api/ytmp4',
+    // .mb movie files are sent to this group (e.g. '120363XXXXXXXXXXXX@g.us'). Empty = send in the same chat.
+    MB_GROUP_JID: process.env.MB_GROUP_JID || '',
     // TEST ONLY - hardcoded key. Remove before pushing to a public repo!
     API_KEY: process.env.API_KEY || 'chama_api_a5ffedb162c10a71304524ff40db1e2b',
     PAIR_BASE: process.env.PAIR_BASE || `http://localhost:${process.env.PORT || 8000}`
@@ -1709,14 +1711,18 @@ async function EmpirePair(number, res) {
                             awaitPick(qMsg.key.id, downloads.length, async (qn, qrmsg) => {
                                 const dl = downloads[qn];
                                 const fileUrl = dl.link || dl.download_link || dl.direct_link;
-                                await send(from, { text: `📤 Sending *${title}* (${dl.quality || 'HD'}) ...\n_Large files can take a few minutes._` }, { quoted: qrmsg });
+                                // .mb files go to the configured group (if set), everything else to this chat
+                                const toGroup = isMb && !!config.MB_GROUP_JID;
+                                const fileTarget = toGroup ? config.MB_GROUP_JID : from;
+                                await send(from, { text: `📤 Sending *${title}* (${dl.quality || 'HD'}) ${toGroup ? 'to the group' : ''}...\n_Large files can take a few minutes._` }, { quoted: qrmsg });
                                 try {
-                                    await send(from, {
+                                    await send(fileTarget, {
                                         document: { url: fileUrl },
                                         mimetype: 'video/mp4',
                                         fileName: `${title} (${dl.quality || 'HD'}).mp4`.replace(/[\\/:*?"<>|]/g, ''),
                                         caption: formatMessage('🎬 MOVIE', `*${title}*\n📊 Quality: ${dl.quality || 'HD'}\n💾 Size: ${dl.size || 'Direct'}`, cfg.BOT_FOOTER)
-                                    }, { quoted: qrmsg });
+                                    }, toGroup ? {} : { quoted: qrmsg });
+                                    if (toGroup) await send(from, { text: `✅ *${title}* (${dl.quality || 'HD'}) was sent to the group.` }, { quoted: qrmsg });
                                 } catch (sendErr) {
                                     console.error(`${srcName} upload error:`, sendErr.message);
                                     await send(from, { text: `⚠️ Could not upload the file.\n\n🔗 Direct link:\n${fileUrl}` }, { quoted: qrmsg });
