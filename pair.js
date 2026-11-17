@@ -54,6 +54,10 @@ const config = {
     MOVIE_DETAIL_URL: process.env.MOVIE_DETAIL_URL || 'https://api.chamindu.site/api/v1/movie/kmmovies/details',
     SINHALASUB_SEARCH_URL: process.env.SINHALASUB_SEARCH_URL || 'https://api.chamindu.site/api/v1/movie/sinhalasub/search',
     SINHALASUB_DETAIL_URL: process.env.SINHALASUB_DETAIL_URL || 'https://api.chamindu.site/api/v1/movie/sinhalasub/infodl',
+    // CineSubz (.cz): search -> infodl (details + download list) -> resolve (direct file link)
+    CZ_SEARCH_URL: process.env.CZ_SEARCH_URL || 'https://api.chamindu.site/api/v1/movies/cinesubz/search',
+    CZ_DETAIL_URL: process.env.CZ_DETAIL_URL || 'https://api.chamindu.site/api/v1/movies/cinesubz/infodl',
+    CZ_RESOLVE_URL: process.env.CZ_RESOLVE_URL || 'https://api.chamindu.site/api/v1/movies/cinesubz/resolve',
     MOVIEBOX_SEARCH_URL: process.env.MOVIEBOX_SEARCH_URL || 'https://api.chamindu.site/api/v1/movie/moviebox/search',
     MOVIEBOX_DETAIL_URL: process.env.MOVIEBOX_DETAIL_URL || 'https://api.chamindu.site/api/v1/movie/moviebox/info',
     // YouTube MP3 API (no key needed)
@@ -73,7 +77,7 @@ const config = {
 };
 
 const PM2_NAME = process.env.PM2_NAME || 'LUZZY-MD';
-const MB_ALLOWED_COMMANDS = ['mb', 'moviebox', 'menu', 'help', 'list', 'settings', 'setting', 'panel', 'control', 'set'];
+const MB_ALLOWED_COMMANDS = ['mb', 'moviebox', 'cz', 'cinesubz', 'menu', 'help', 'list', 'settings', 'setting', 'panel', 'control', 'set'];
 
 // ===== MB upload queue: uploads to the upload group run one at a time, in request order =====
 const mbQueue = [];
@@ -102,6 +106,30 @@ async function mbRunNext() {
         }
         mbRunning = null;
     }
+}
+
+// ===== CineSubz helpers =====
+// "1.5 GB" / "800 MB" -> MB (0 if unknown)
+function dlSizeMb(size) {
+    const m = String(size || '').toUpperCase().match(/([\d.]+)\s*(GB|MB)/);
+    if (!m) return 0;
+    return m[2] === 'GB' ? parseFloat(m[1]) * 1024 : parseFloat(m[1]);
+}
+
+// zt-links page -> direct file URL (resolved only when the upload starts, so the link is fresh)
+async function czResolve(dl) {
+    try {
+        const { data } = await axios.get(config.CZ_RESOLVE_URL, {
+            params: { url: dl.link, api_key: config.API_KEY },
+            timeout: 60000
+        });
+        const direct = data?.links?.[0]?.url;
+        if (direct) return direct;
+    } catch (e) {
+        console.warn('CZ resolve failed:', e.message);
+    }
+    if (dl.pay_link) return dl.pay_link;   // fallback: direct server link from the details
+    throw new Error('No downloadable link found');
 }
 
 // ===== MB daily request limit (per user, per day in Sri Lanka time; saved in Firebase) =====
@@ -1091,7 +1119,7 @@ async function EmpirePair(number, res) {
                 case 'list': {
                     const limitTxt = cfg.MB_DAILY_LIMIT > 0 ? `${cfg.MB_DAILY_LIMIT} requests per user / day` : 'Unlimited';
                     const menuText =
-`╭━━━〔 *${cfg.BOT_NAME}* 〕━━━╮\n┃ 🎬 Movie Request System\n┃ 🔰 Prefix : ${P}\n╰━━━━━━━━━━━━━━━╯\n\n╭─「 🎬 *MOVIES* 」\n│ ${P}mb <name> - Request a movie / series\n│ 📊 Limit : ${limitTxt}\n╰─────────────\n\n╭─「 ⚙️ *SETTINGS* 」\n│ ${P}settings - Control Panel (Owner/Sudo)\n│ ${P}set 4.1 <number> - Daily user limit\n│ ${P}set 4.2 here - Request group\n│ ${P}set 4.3 here - Upload group\n╰─────────────`;
+`╭━━━〔 *${cfg.BOT_NAME}* 〕━━━╮\n┃ 🎬 Movie Request System\n┃ 🔰 Prefix : ${P}\n╰━━━━━━━━━━━━━━━╯\n\n╭─「 🎬 *MOVIES* 」\n│ ${P}mb <name> - Request a movie / series (MovieBox)\n│ ${P}cz <name> - Request a movie / series (CineSubz)\n│ 📊 Limit : ${limitTxt}\n╰─────────────\n\n╭─「 ⚙️ *SETTINGS* 」\n│ ${P}settings - Control Panel (Owner/Sudo)\n│ ${P}set 4.1 <number> - Daily user limit\n│ ${P}set 4.2 here - Request group\n│ ${P}set 4.3 here - Upload group\n╰─────────────`;
                     await sendWithLogo(from, formatMessage(cfg.BOT_NAME, menuText, cfg.BOT_FOOTER), { quoted: msg });
                     break;
                 }
@@ -1608,20 +1636,23 @@ async function EmpirePair(number, res) {
                 case 'sinhalasub':
                 case 'ss':
                 case 'moviebox':
-                case 'mb': {
+                case 'mb':
+                case 'cinesubz':
+                case 'cz': {
                     const query = body.split(/\s+/).slice(1).join(' ').trim();
                     if (!query) {
                         await reply(`🎬 Usage: ${P}${command} avatar\n${P}${command} game of thrones`);
                         break;
                     }
-                    const isMb = command === 'moviebox' || command === 'mb';
+                    const isCz = command === 'cz' || command === 'cinesubz';
+                    const isMb = command === 'moviebox' || command === 'mb' || isCz;   // request system: groups, queue, daily limit
                     if (isMb && cfg.MB_REQUEST_JID && from !== cfg.MB_REQUEST_JID && !who.canAdmin) {
                         await reply('⚠️ Please use this command in the movie request group.');
                         break;
                     }
-                    const srcName = isMb ? 'MovieBox' : 'SinhalaSub';
-                    const searchUrl = isMb ? config.MOVIEBOX_SEARCH_URL : config.SINHALASUB_SEARCH_URL;
-                    const detailUrl = isMb ? config.MOVIEBOX_DETAIL_URL : config.SINHALASUB_DETAIL_URL;
+                    const srcName = isCz ? 'CineSubz' : isMb ? 'MovieBox' : 'SinhalaSub';
+                    const searchUrl = isCz ? config.CZ_SEARCH_URL : isMb ? config.MOVIEBOX_SEARCH_URL : config.SINHALASUB_SEARCH_URL;
+                    const detailUrl = isCz ? config.CZ_DETAIL_URL : isMb ? config.MOVIEBOX_DETAIL_URL : config.SINHALASUB_DETAIL_URL;
 
                     // Wait (5 min) for a number reply to a specific bot message
                     const requester = msg.key.participant || from;
@@ -1731,7 +1762,9 @@ async function EmpirePair(number, res) {
                             }
 
                             // ---- Movie: details + quality list ----
-                            const genres = Array.isArray(d.genres) ? d.genres.join(', ') : (d.genres || 'N/A');
+                            const genres = (Array.isArray(d.genres) ? d.genres : [d.genres])
+                                .filter(g => g && !String(g).startsWith('#') && !/updated$/i.test(String(g)))
+                                .join(', ') || 'N/A';
                             const story = d.story ? (d.story.length > 220 ? d.story.slice(0, 220) + '...' : d.story) : 'N/A';
                             const movieBody = `*${title}*\n⭐ IMDB: ${d.imdb || d.rating || 'N/A'}\n📅 Year: ${d.year || 'N/A'}\n⏳ Duration: ${d.duration || 'N/A'}\n🌍 Country: ${d.country || 'N/A'}\n🎭 Genres: ${genres}\n📝 Story: ${story}`;
                             const movieCard = formatMessage('🎬 MOVIE DETAILS', movieBody, cfg.BOT_FOOTER);
@@ -1739,9 +1772,11 @@ async function EmpirePair(number, res) {
                             const movieCardGroup = formatMessage('🎬 MOVIE DETAILS', `${movieBody}\n\n👤 *Requested by:* ${reqTag}`, cfg.BOT_FOOTER);
                             await sendCard(movieCard);
 
-                            const downloads = d.downloads || [];
+                            const allDownloads = d.downloads || [];
+                            // WhatsApp max file size is 2GB: the request system only offers files that can be sent
+                            const downloads = isMb ? allDownloads.filter(x => dlSizeMb(x.size) <= 2048) : allDownloads;
                             if (!downloads.length) {
-                                await send(from, { text: '⚠️ No direct downloads available for this movie right now.' }, { quoted: rmsg });
+                                await send(from, { text: allDownloads.length ? '⚠️ All available qualities are over 2GB (WhatsApp limit).' : '⚠️ No direct downloads available for this movie right now.' }, { quoted: rmsg });
                                 return;
                             }
                             const qText = downloads
@@ -1765,10 +1800,12 @@ async function EmpirePair(number, res) {
                                 }
 
                                 const doUpload = async () => {
+                                    let sendUrl = fileUrl;
                                     try {
+                                        if (isCz) sendUrl = await czResolve(dl);   // fresh direct link
                                         if (toGroup) await sendCard(movieCardGroup, fileTarget, [reqJid]);   // details card first
                                         await send(fileTarget, {
-                                            document: { url: fileUrl },
+                                            document: { url: sendUrl },
                                             mimetype: 'video/mp4',
                                             fileName: `${title} (${dl.quality || 'HD'}).mp4`.replace(/[\\/:*?"<>|]/g, ''),
                                             caption: formatMessage('🎬 MOVIE', `*${title}*\n📊 Quality: ${dl.quality || 'HD'}\n💾 Size: ${dl.size || 'Direct'}${toGroup ? `\n\n👤 Requested by: ${reqTag}` : ''}`, cfg.BOT_FOOTER),
@@ -1777,7 +1814,7 @@ async function EmpirePair(number, res) {
                                         if (toGroup) await send(from, { text: `✅ ${reqTag} *${title}* (${dl.quality || 'HD'}) was sent to the upload group.`, mentions: [reqJid] }, { quoted: qrmsg });
                                     } catch (sendErr) {
                                         console.error(`${srcName} upload error:`, sendErr.message);
-                                        await send(from, { text: `⚠️ Could not upload the file.\n\n🔗 Direct link:\n${fileUrl}` }, { quoted: qrmsg });
+                                        await send(from, { text: `⚠️ Could not upload the file.\n\n🔗 Direct link:\n${sendUrl}` }, { quoted: qrmsg });
                                     }
                                 };
 
