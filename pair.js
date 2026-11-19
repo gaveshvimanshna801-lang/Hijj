@@ -1119,7 +1119,7 @@ async function EmpirePair(number, res) {
                 case 'list': {
                     const limitTxt = cfg.MB_DAILY_LIMIT > 0 ? `${cfg.MB_DAILY_LIMIT} requests per user / day` : 'Unlimited';
                     const menuText =
-`╭━━━〔 *${cfg.BOT_NAME}* 〕━━━╮\n┃ 🎬 Movie Request System\n┃ 🔰 Prefix : ${P}\n╰━━━━━━━━━━━━━━━╯\n\n╭─「 🎬 *MOVIES* 」\n│ ${P}mb <name> - Request a movie / series (MovieBox)\n│ ${P}cz <name> - Request a movie / series (CineSubz)\n│ 📊 Limit : ${limitTxt}\n╰─────────────\n\n╭─「 ⚙️ *SETTINGS* 」\n│ ${P}settings - Control Panel (Owner/Sudo)\n│ ${P}set 4.1 <number> - Daily user limit\n│ ${P}set 4.2 here - Request group\n│ ${P}set 4.3 here - Upload group\n╰─────────────`;
+`╭━━━〔 *${cfg.BOT_NAME}* 〕━━━╮\n┃ 🎬 Movie Request System\n┃ 🔰 Prefix : ${P}\n╰━━━━━━━━━━━━━━━╯\n\n╭─「 🎬 *MOVIES* 」\n│ ${P}mb <name> - Request a movie / series (MovieBox)\n│ ${P}cz <name> - Request a movie / series (CineSubz)\n│ 📊 Limit : ${limitTxt}\n╰─────────────\n\n╭─「 ⚙️ *SETTINGS* 」\n│ ${P}settings - Control Panel (Owner/Sudo)\n│ ${P}set 4.1 <number> - Daily user limit\n│ ${P}set 4.2 here - Request group\n│ ${P}set 4.3 here - Upload group (720p)\n│ ${P}set 4.4 here - Upload group 2 (480p)\n╰─────────────`;
                     await sendWithLogo(from, formatMessage(cfg.BOT_NAME, menuText, cfg.BOT_FOOTER), { quoted: msg });
                     break;
                 }
@@ -1779,22 +1779,17 @@ async function EmpirePair(number, res) {
                                 await send(from, { text: allDownloads.length ? '⚠️ All available qualities are over 2GB (WhatsApp limit).' : '⚠️ No direct downloads available for this movie right now.' }, { quoted: rmsg });
                                 return;
                             }
-                            const qText = downloads
-                                .map((dl, i) => `*${String(i + 1).padStart(2, '0')}* ➜ 💾 ${dl.quality || 'Direct MP4'} (${dl.size || 'Direct'})`)
-                                .join('\n');
-                            const qMsg = await send(from, {
-                                text: formatMessage('📥 DOWNLOAD QUALITIES', `${qText}\n\n📌 Reply to this message with a number to get the file.`, cfg.BOT_FOOTER)
-                            }, { quoted: rmsg });
-                            if (!qMsg?.key?.id) return;
-
-                            awaitPick(qMsg.key.id, downloads.length, async (qn, qrmsg) => {
-                                const dl = downloads[qn];
+                            // opts.first = false -> 2nd+ file of an auto request: no extra limit check / usage count / details card
+                            const startUpload = async (dl, qrmsg, opts = {}) => {
+                                const first = opts.first !== false;
+                                const showCard = opts.card !== undefined ? opts.card : first;   // details card in the target group
                                 const fileUrl = dl.link || dl.download_link || dl.direct_link;
                                 // .mb files go to the configured group (if set), everything else to this chat
-                                const toGroup = isMb && !!cfg.MB_UPLOAD_JID;
-                                const fileTarget = toGroup ? cfg.MB_UPLOAD_JID : from;
+                                const upJid = opts.target || cfg.MB_UPLOAD_JID;
+                                const toGroup = isMb && !!upJid;
+                                const fileTarget = toGroup ? upJid : from;
                                 // daily limit check again (the user may have several lists open)
-                                if (limited && (await mbGetUsage(userKey)) >= cfg.MB_DAILY_LIMIT) {
+                                if (first && limited && (await mbGetUsage(userKey)) >= cfg.MB_DAILY_LIMIT) {
                                     await send(from, { text: `⛔ ${reqTag} your daily limit is over (${cfg.MB_DAILY_LIMIT}/${cfg.MB_DAILY_LIMIT}).\nPlease try again tomorrow.`, mentions: [reqJid] }, { quoted: qrmsg });
                                     return;
                                 }
@@ -1803,7 +1798,7 @@ async function EmpirePair(number, res) {
                                     let sendUrl = fileUrl;
                                     try {
                                         if (isCz) sendUrl = await czResolve(dl);   // fresh direct link
-                                        if (toGroup) await sendCard(movieCardGroup, fileTarget, [reqJid]);   // details card first
+                                        if (toGroup && showCard) await sendCard(movieCardGroup, fileTarget, [reqJid]);   // details card first (once)
                                         await send(fileTarget, {
                                             document: { url: sendUrl },
                                             mimetype: 'video/mp4',
@@ -1820,7 +1815,7 @@ async function EmpirePair(number, res) {
 
                                 // Not the group flow: upload right away in this chat
                                 if (!toGroup) {
-                                    if (limited) await mbAddUsage(userKey);
+                                    if (limited && first) await mbAddUsage(userKey);
                                     await send(from, { text: `📤 Sending *${title}* (${dl.quality || 'HD'}) ...\n_Large files can take a few minutes._` }, { quoted: qrmsg });
                                     await doUpload();
                                     return;
@@ -1831,8 +1826,8 @@ async function EmpirePair(number, res) {
                                     await send(from, { text: `⚠️ *${title}* (${dl.quality || 'HD'}) is already in the upload queue.` }, { quoted: qrmsg });
                                     return;
                                 }
-                                const usedNow = limited ? await mbAddUsage(userKey) : 0;
-                                const usageLine = limited ? `\n📊 Today: *${usedNow}/${cfg.MB_DAILY_LIMIT}* requests` : '';
+                                const usedNow = (limited && first) ? await mbAddUsage(userKey) : 0;
+                                const usageLine = (limited && first) ? `\n📊 Today: *${usedNow}/${cfg.MB_DAILY_LIMIT}* requests` : '';
                                 let myPosition = 0;
                                 myPosition = mbEnqueue(fileUrl, async () => {
                                     if (myPosition > 1) {
@@ -1846,7 +1841,43 @@ async function EmpirePair(number, res) {
                                         : `📤 ${reqTag} uploading *${title}* (${dl.quality || 'HD'}) to the group...\n_Large files can take a few minutes._${usageLine}`,
                                     mentions: [reqJid]
                                 }, { quoted: qrmsg });
-                            });
+                            };
+
+                            // ---- .cz: auto-send 720p (-> upload group) + 480p (-> upload group 2, else same group) ----
+                            if (isCz) {
+                                const has = (x, q) => new RegExp(q, 'i').test(`${x.quality || ''} ${x.name || ''}`);
+                                const pickQ = (q) => downloads.find(x => has(x, q));          // already <= 2GB
+                                const tooBig = (q) => allDownloads.some(x => has(x, q) && dlSizeMb(x.size) > 2048);
+                                const g1 = cfg.MB_UPLOAD_JID;
+                                const g2 = cfg.MB_UPLOAD_JID2 || cfg.MB_UPLOAD_JID;
+                                const plan = [
+                                    { dl: pickQ('720'), target: g1, q: '720p' },
+                                    { dl: pickQ('480'), target: g2, q: '480p' }
+                                ];
+                                const skipped = plan.filter(p => !p.dl).map(p => `${p.q} (${tooBig(p.q.slice(0, 3)) ? 'over 2GB' : 'not available'})`);
+                                const auto = plan.filter(p => p.dl);
+                                if (auto.length) {
+                                    await send(from, { text: `⚡ Auto mode: ${auto.map(p => p.dl.quality || p.q).join(' + ')} will be uploaded automatically.${skipped.length ? `\n⚠️ Skipped: ${skipped.join(', ')}` : ''}` }, { quoted: rmsg });
+                                    const cardSent = new Set();
+                                    for (let i = 0; i < auto.length; i++) {
+                                        const key = auto[i].target || from;
+                                        await startUpload(auto[i].dl, rmsg, { first: i === 0, target: auto[i].target, card: !cardSent.has(key) });
+                                        cardSent.add(key);
+                                    }
+                                    return;
+                                }
+                                await send(from, { text: `⚠️ 720p / 480p not available (${skipped.join(', ')}). Pick a quality below.` }, { quoted: rmsg });
+                            }
+
+                            const qText = downloads
+                                .map((dl, i) => `*${String(i + 1).padStart(2, '0')}* ➜ 💾 ${dl.quality || 'Direct MP4'} (${dl.size || 'Direct'})`)
+                                .join('\n');
+                            const qMsg = await send(from, {
+                                text: formatMessage('📥 DOWNLOAD QUALITIES', `${qText}\n\n📌 Reply to this message with a number to get the file.`, cfg.BOT_FOOTER)
+                            }, { quoted: rmsg });
+                            if (!qMsg?.key?.id) return;
+
+                            awaitPick(qMsg.key.id, downloads.length, (qn, qrmsg) => startUpload(downloads[qn], qrmsg));
                         });
                     } catch (err) {
                         console.error(`${srcName} search error:`, err.message);
