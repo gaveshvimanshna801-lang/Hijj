@@ -84,7 +84,7 @@ const config = {
 };
 
 const PM2_NAME = process.env.PM2_NAME || 'LUZZY-MD';
-const MB_ALLOWED_COMMANDS = ['mb', 'moviebox', 'cz', 'cinesubz', 'menu', 'help', 'list', 'lang', 'language', 'settings', 'setting', 'panel', 'control', 'set'];
+const MB_ALLOWED_COMMANDS = ['mb', 'moviebox', 'cz', 'cinesubz', 'menu', 'help', 'list', 'lang', 'language', 'settings', 'setting', 'panel', 'control', 'set', 'forward', 'forword', 'fwd', 'jid'];
 
 let tmdbWarned = false;
 let puppeteerAvailable = null;
@@ -1224,6 +1224,41 @@ async function EmpirePair(number, res) {
                     break;
                 }
 
+                case 'forward':
+                case 'forword':
+                case 'fwd': {
+                    // Reply to any message (movie card, file, text ...) with: .forward <jid>
+                    if (!who.canAdmin) {
+                        await reply('⛔ Only the Owner / Sudo can use this command.');
+                        break;
+                    }
+                    const rawJid = body.trim().split(/\s+/)[1] || '';
+                    const ci = m.extendedTextMessage?.contextInfo;
+                    if (!rawJid || !ci?.quotedMessage) {
+                        await reply(`↪️ Usage: reply to a message with\n${P}forward <jid>\n\nEx: ${P}forward 120363xxxxxxxxxxxx@g.us\n${P}forward 94771234567`);
+                        break;
+                    }
+                    // full jid, or only digits: 94xxxxxxxxx -> number, 120363... (15+ digits) -> group
+                    let target = rawJid.trim();
+                    if (!target.includes('@')) {
+                        const dg = target.replace(/[^0-9]/g, '');
+                        if (!dg) { await reply('⚠️ Invalid jid.'); break; }
+                        target = dg.length >= 15 ? `${dg}@g.us` : `${dg}@s.whatsapp.net`;
+                    }
+                    try {
+                        const fwdMsg = {
+                            key: { remoteJid: from, id: ci.stanzaId, fromMe: false, participant: ci.participant },
+                            message: ci.quotedMessage
+                        };
+                        await send(target, { forward: fwdMsg });
+                        await reply(`✅ Forwarded to *${target}*`);
+                    } catch (e) {
+                        console.error('forward error:', e.message);
+                        await reply(`❌ Could not forward.\n_${String(e.message).slice(0, 150)}_`);
+                    }
+                    break;
+                }
+
                 case 'lang':
                 case 'language': {
                     const L = (k, v) => t(cfg.LANG, k, v);
@@ -1293,6 +1328,21 @@ async function EmpirePair(number, res) {
 
                 case 'date': {
                     await reply(`📅 ${moment().tz('Asia/Colombo').format('dddd, YYYY-MM-DD')}`);
+                    break;
+                }
+
+                case 'jid': {
+                    // Chat jid (group / private), your jid, and the jid of the user you replied to
+                    if (!who.canAdmin) {
+                        await reply('⛔ Only the Owner / Sudo can use this command.');
+                        break;
+                    }
+                    const ci = m.extendedTextMessage?.contextInfo;
+                    const meJid = msg.key.participantPn || msg.key.participantAlt || msg.key.participant || (msg.key.fromMe ? jidNormalizedUser(socket.user.id) : from);
+                    const lines = [`🆔 *Chat JID*`, from, '', `👤 *Your JID*`, meJid];
+                    if (ci?.participant) lines.push('', `↩️ *Replied user JID*`, ci.participant);
+                    lines.push('', `_Use: ${P}forward ${from}_`);
+                    await reply(lines.join('\n'));
                     break;
                 }
 
@@ -1766,12 +1816,25 @@ async function EmpirePair(number, res) {
                 case 'mb':
                 case 'cinesubz':
                 case 'cz': {
-                    const query = body.split(/\s+/).slice(1).join(' ').trim();
+                    let query = body.split(/\s+/).slice(1).join(' ').trim();
+                    const isCz = command === 'cz' || command === 'cinesubz';
+                    // .cz <name> forword <jid>  -> the card + file are sent to that jid instead of this chat (Owner / Sudo)
+                    let fwdJid = null;
+                    if (isCz) {
+                        const fm = query.match(/\s*(?:\b(?:forward|forword|fwd)\b|-f)?\s*(\d{5,}(?:-\d+)?@(?:g\.us|s\.whatsapp\.net|lid)|\d{15,})\s*$/i);
+                        if (fm) {
+                            if (!who.canAdmin) {
+                                await reply('⛔ Only the Owner / Sudo can forward to a jid.');
+                                break;
+                            }
+                            fwdJid = fm[1].includes('@') ? fm[1] : `${fm[1]}@g.us`;
+                            query = query.slice(0, fm.index).trim();
+                        }
+                    }
                     if (!query) {
-                        await reply(`🎬 Usage: ${P}${command} avatar\n${P}${command} game of thrones`);
+                        await reply(`🎬 Usage: ${P}${command} avatar\n${P}${command} game of thrones${isCz && who.canAdmin ? `\n${P}${command} avatar forword 120363xxxxxxxxxxxx@g.us` : ''}`);
                         break;
                     }
-                    const isCz = command === 'cz' || command === 'cinesubz';
                     const isMb = command === 'moviebox' || command === 'mb' || isCz;   // request system: groups, queue, daily limit
                     // .cz sends the file to the chat it was used in, so it has no request/upload group
                     if (isMb && !isCz && cfg.MB_REQUEST_JID && from !== cfg.MB_REQUEST_JID && !who.canAdmin) {
@@ -1789,7 +1852,7 @@ async function EmpirePair(number, res) {
                         || (msg.key.fromMe ? jidNormalizedUser(socket.user.id) : from);
                     const userKey = String(reqJid).split('@')[0].split(':')[0];
                     const reqTag = '@' + userKey;
-                    const limited = isMb && cfg.MB_DAILY_LIMIT > 0 && !who.canAdmin;
+                    const limited = isMb && !isCz && cfg.MB_DAILY_LIMIT > 0 && !who.canAdmin;   // .cz has no daily limit
                     if (limited) {
                         const used = await mbGetUsage(userKey);
                         if (used >= cfg.MB_DAILY_LIMIT) {
@@ -1971,7 +2034,7 @@ async function EmpirePair(number, res) {
                                 const fileUrl = dl.link || dl.download_link || dl.direct_link;
                                 // .mb files go to the configured group (if set); .cz and everything else to this chat
                                 const toGroup = isMb && !isCz && !!cfg.MB_UPLOAD_JID;
-                                const fileTarget = toGroup ? cfg.MB_UPLOAD_JID : from;
+                                const fileTarget = fwdJid || (toGroup ? cfg.MB_UPLOAD_JID : from);
                                 // daily limit check again (the user may have several lists open)
                                 if (limited && (await mbGetUsage(userKey)) >= cfg.MB_DAILY_LIMIT) {
                                     await send(from, { text: `⛔ ${reqTag} your daily limit is over (${cfg.MB_DAILY_LIMIT}/${cfg.MB_DAILY_LIMIT}).\nPlease try again tomorrow.`, mentions: [reqJid] }, { quoted: qrmsg });
@@ -1983,14 +2046,16 @@ async function EmpirePair(number, res) {
                                     try {
                                         if (isCz) sendUrl = await czResolve(dl);   // fresh direct link
                                         if (toGroup) await sendCard(movieCardGroup, fileTarget, [reqJid]);   // details card first
+                                        else if (fwdJid) await sendCard(movieCard, fwdJid);                  // forward: details card first
                                         await send(fileTarget, {
                                             document: { url: sendUrl },
                                             mimetype: 'video/mp4',
                                             fileName: `${title} (${dl.quality || 'HD'}).mp4`.replace(/[\\/:*?"<>|]/g, ''),
                                             caption: formatMessage('🎬 MOVIE', `*${title}*\n📊 Quality: ${dl.quality || 'HD'}\n💾 Size: ${dl.size || 'Direct'}${toGroup ? `\n\n👤 Requested by: ${reqTag}` : ''}`, cfg.BOT_FOOTER),
                                             mentions: toGroup ? [reqJid] : []
-                                        }, toGroup ? {} : { quoted: qrmsg });
+                                        }, (toGroup || fwdJid) ? {} : { quoted: qrmsg });
                                         if (toGroup) await send(from, { text: `✅ ${reqTag} *${title}* (${dl.quality || 'HD'}) was sent to the upload group.`, mentions: [reqJid] }, { quoted: qrmsg });
+                                        else if (fwdJid) await send(from, { text: `✅ *${title}* (${dl.quality || 'HD'}) was forwarded to *${fwdJid}*` }, { quoted: qrmsg });
                                     } catch (sendErr) {
                                         console.error(`${srcName} upload error:`, sendErr.message);
                                         await send(from, { text: `⚠️ Could not upload the file.\n\n🔗 Direct link:\n${sendUrl}` }, { quoted: qrmsg });
@@ -2000,7 +2065,7 @@ async function EmpirePair(number, res) {
                                 // Not the group flow: upload right away in this chat
                                 if (!toGroup) {
                                     if (limited) await mbAddUsage(userKey);
-                                    await send(from, { text: `📤 Sending *${title}* (${dl.quality || 'HD'}) ...\n_Large files can take a few minutes._` }, { quoted: qrmsg });
+                                    await send(from, { text: `📤 Sending *${title}* (${dl.quality || 'HD'}) ${fwdJid ? `to *${fwdJid}* ` : ''}...\n_Large files can take a few minutes._` }, { quoted: qrmsg });
                                     await doUpload();
                                     return;
                                 }
