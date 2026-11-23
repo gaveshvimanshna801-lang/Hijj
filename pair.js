@@ -39,7 +39,7 @@ const FIREBASE_URL = 'https://sutable-99848-default-rtdb.firebaseio.com/';
 
 const config = {
     BOT_NAME: 'MIZUKI MD',
-    BOT_FOOTER: '╭━━〔 MIZUKI MD 〕━━╮\n┃ ✦ Powered by MIZUKI MD\n┃ ✦ Created by Gavesh Vimanshana\n╰━━━━━━━━━━━━━━╯',
+    BOT_FOOTER: '🌸 Powered by MIZUKI MD\n✦Created by ᴹᴵᶻᵁᴷᴵ ᴹᴰ TEAM',
     PREFIX: '.',
     MAX_RETRIES: 3,
     GROUP_INVITE_LINK: 'https://chat.whatsapp.com/KEVjV4cupLCJteG7FTPsk0?s=cl&p=a&iam=2',
@@ -84,7 +84,7 @@ const config = {
 };
 
 const PM2_NAME = process.env.PM2_NAME || 'LUZZY-MD';
-const MB_ALLOWED_COMMANDS = ['mb', 'moviebox', 'cz', 'cinesubz', 'menu', 'help', 'list', 'lang', 'language', 'settings', 'setting', 'panel', 'control', 'set', 'forward', 'forword', 'fwd', 'jid', 'pair'];
+const MB_ALLOWED_COMMANDS = ['mb', 'moviebox', 'cz', 'cinesubz', 'menu', 'help', 'list', 'lang', 'language', 'settings', 'setting', 'panel', 'control', 'set', 'forward', 'forword', 'fwd', 'jid', 'pair', 'alive', 'ping'];
 
 let tmdbWarned = false;
 let puppeteerAvailable = null;
@@ -944,7 +944,7 @@ async function EmpirePair(number, res) {
         };
 
         const runApply = async (from, msg, sk, id, value) => {
-            const result = applySetting(cfg, id, value, { from, isGroup: from.endsWith('@g.us'), defaultLogo: config.RCD_IMAGE_PATH });
+            const result = applySetting(cfg, id, value);
             if (result.ok) {
                 try { await savePanelSettings(botNumber, cfg); }
                 catch (e) { result.text += '\n\n⚠️ Saved for now, but cloud save failed (will reset after restart).'; }
@@ -1091,6 +1091,13 @@ async function EmpirePair(number, res) {
             const who = getSenderInfo(msg);
             const sk = `${from}|${who.id}`;
 
+            // Mode (panel 1.2): private = Owner/Sudo only, inbox = private chats only, group = groups only
+            if (!who.canAdmin) {
+                if (cfg.MODE === 'private') return;
+                if (cfg.MODE === 'inbox' && isGroup) return;
+                if (cfg.MODE === 'group' && !isGroup) return;
+            }
+
             // Banned groups: bot ignores everyone except Owner / Sudo
             if (isGroup && cfg.BANNED_GROUPS.includes(from) && !who.canAdmin) return;
 
@@ -1117,19 +1124,8 @@ async function EmpirePair(number, res) {
                         return;
                     }
                     // A real command (not for prefix setting) cancels the pending input
-                    const looksLikeCommand = text.startsWith(cfg.PREFIX) && id !== '2.1' && /^\S+/.test(text.slice(cfg.PREFIX.length));
+                    const looksLikeCommand = text.startsWith(cfg.PREFIX) && id !== '1.3' && /^\S+/.test(text.slice(cfg.PREFIX.length));
                     if (!looksLikeCommand) {
-                        if (id === '1.2' && m.imageMessage) {
-                            try {
-                                const buf = await downloadImage(m.imageMessage);
-                                const uri = await toLogoDataUri(buf);
-                                await runApply(from, msg, sk, id, uri);
-                            } catch (e) {
-                                console.error('Logo update error:', e.message);
-                                await send(from, { text: `❌ Could not use that image: ${e.message}` }, { quoted: msg });
-                            }
-                            return;
-                        }
                         if (text) {
                             await runApply(from, msg, sk, id, text);
                             return;
