@@ -51,7 +51,7 @@ test('every menu command has a description in every language', () => {
 test('MB-only mode shows only commands the bot will answer', () => {
     const ctx = baseCtx({ mbOnly: true, canAdmin: false });
     const shown = menu.getCategories(ctx).flatMap(c => c.cmds.flatMap(x => x.names));
-    assert.deepStrictEqual(shown.sort(), ['cz', 'cinesubz', 'mb', 'moviebox', 'pair'].sort());
+    assert.deepStrictEqual(shown.sort(), ['alive', 'cz', 'cinesubz', 'mb', 'moviebox', 'pair', 'ping'].sort());
     for (const n of shown) assert.ok(MB_ALLOWED.includes(n));
 });
 
@@ -226,7 +226,7 @@ atest('TMDB: network error -> null (bot falls back to the old card)', async () =
 atest('TMDB: list card (boxed style) stays under 1000 chars and lists numbered qualities', async () => {
     const http = fakeHttp([{ id: 7, release_date: '2026-10-02' }], DETAIL);
     const info = await tmdbLookup('Anbil Avan', 2026, { key: 'k', http });
-    const footer = '╭━━〔 MIZUKI MD 〕━━╮\n┃ ✦ Powered by MIZUKI MD\n┃ ✦ Created by Gavesh Vimanshana\n╰━━━━━━━━━━━━━━╯';
+    const footer = '🌸 Powered by MIZUKI MD\n✦Created by ᴹᴵᶻᵁᴷᴵ ᴹᴰ TEAM';
     const card = tmdbListCard(info, { name: 'MIZUKI MD', footer, qualities: ['WEB-DL 480p • 800 MB', 'WEB-DL 720p • 1.6 GB', 'WEB-DL 1080p • 3.3 GB'] });
     assert.ok(card.length <= 1000, `caption is ${card.length} chars`);
     assert.ok(card.startsWith('╭━━〔 🌸 MIZUKI MD 〕━━╮'));
@@ -247,4 +247,23 @@ atest('TMDB: list card (boxed style) stays under 1000 chars and lists numbered q
 test('.cz quality list accepts "0" and "N*" (extras)', () => {
     assert.ok(pairSrc.includes('tmdbListCard(tmdb'));
     assert.ok(pairSrc.includes('{ extras: !!tmdb }'));
+});
+
+const panel = require('../lib/panel');
+test('panel: only Language, Mode and Prefix; mode/prefix/lang apply and validate', () => {
+    assert.deepStrictEqual(Object.keys(panel.ITEMS), ['1.1', '1.2', '1.3']);
+    const cfg = panel.makeDefaults({ PREFIX: '.' });
+    assert.strictEqual(cfg.MODE, 'public');
+    for (const [v, m] of [['private', 'private'], ['inbox', 'inbox'], ['dm', 'inbox'], ['groups', 'group'], ['reset', 'public']]) {
+        assert.ok(panel.applySetting(cfg, '1.2', v).ok); assert.strictEqual(cfg.MODE, m);
+    }
+    assert.ok(!panel.applySetting(cfg, '1.2', 'banana').ok);
+    assert.ok(panel.applySetting(cfg, '1.3', '!').ok); assert.strictEqual(cfg.PREFIX, '!');
+    assert.ok(!panel.applySetting(cfg, '1.3', 'abcd').ok);
+    assert.ok(panel.applySetting(cfg, '1.1', 'si').ok); assert.strictEqual(cfg.LANG, 'si');
+    assert.ok(!panel.applySetting(cfg, '2.1', 'x').ok);
+    assert.strictEqual(panel.normalize({ MODE: 'inbox' }).MODE, 'inbox');
+    assert.strictEqual(panel.normalize({ MODE: 'zzz' }).MODE, 'public');
+    const text = panel.buildPanel(cfg);
+    assert.ok(text.includes('1.1') && text.includes('1.2') && text.includes('1.3') && !text.includes('4.1'));
 });
