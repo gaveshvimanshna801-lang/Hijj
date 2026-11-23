@@ -1767,7 +1767,8 @@ async function EmpirePair(number, res) {
                     }
                     const isCz = command === 'cz' || command === 'cinesubz';
                     const isMb = command === 'moviebox' || command === 'mb' || isCz;   // request system: groups, queue, daily limit
-                    if (isMb && cfg.MB_REQUEST_JID && from !== cfg.MB_REQUEST_JID && !who.canAdmin) {
+                    // .cz sends the file to the chat it was used in, so it has no request/upload group
+                    if (isMb && !isCz && cfg.MB_REQUEST_JID && from !== cfg.MB_REQUEST_JID && !who.canAdmin) {
                         await reply('⚠️ Please use this command in the movie request group.');
                         break;
                     }
@@ -1790,10 +1791,15 @@ async function EmpirePair(number, res) {
                             break;
                         }
                     }
+                    // The list stays open for 5 minutes after the LAST pick, so people can reply to
+                    // several numbers (eg: more than one quality). The same number can't run twice at once.
                     const awaitPick = (listId, max, onPick) => {
+                        const inFlight = new Set();
+                        let timer;
                         const handler = async ({ messages: rm }) => {
                             const rmsg = rm?.[0];
                             if (!rmsg?.message) return;
+                            if (rmsg.key.id && sentIds.has(rmsg.key.id)) return;
                             const inner = rmsg.message.ephemeralMessage?.message || rmsg.message;
                             const ext = inner.extendedTextMessage;
                             if (ext?.contextInfo?.stanzaId !== listId) return;
@@ -1805,17 +1811,31 @@ async function EmpirePair(number, res) {
                                 await send(from, { text: `⚠️ Invalid choice! Send a number from 1 to ${max}.` }, { quoted: rmsg });
                                 return;
                             }
-                            stop();
+                            if (inFlight.has(n)) {
+                                await send(from, { text: `⏳ Option *${n + 1}* is already being processed. Please wait.` }, { quoted: rmsg });
+                                return;
+                            }
+                            inFlight.add(n);
+                            resetTimer();
                             try {
                                 await onPick(n, rmsg);
                             } catch (err) {
                                 console.error(`${srcName} error:`, err.message);
                                 await send(from, { text: '❌ Something went wrong. Try again later.' }, { quoted: rmsg });
+                            } finally {
+                                inFlight.delete(n);
                             }
                         };
-                        const stop = () => socket.ev.off('messages.upsert', handler);
+                        const stop = () => {
+                            clearTimeout(timer);
+                            socket.ev.off('messages.upsert', handler);
+                        };
+                        const resetTimer = () => {
+                            clearTimeout(timer);
+                            timer = setTimeout(stop, 5 * 60 * 1000);
+                        };
                         socket.ev.on('messages.upsert', handler);
-                        setTimeout(stop, 5 * 60 * 1000);
+                        resetTimer();
                     };
 
                     try {
@@ -1911,8 +1931,8 @@ async function EmpirePair(number, res) {
                             awaitPick(qMsg.key.id, downloads.length, async (qn, qrmsg) => {
                                 const dl = downloads[qn];
                                 const fileUrl = dl.link || dl.download_link || dl.direct_link;
-                                // .mb files go to the configured group (if set), everything else to this chat
-                                const toGroup = isMb && !!cfg.MB_UPLOAD_JID;
+                                // .mb files go to the configured group (if set); .cz and everything else to this chat
+                                const toGroup = isMb && !isCz && !!cfg.MB_UPLOAD_JID;
                                 const fileTarget = toGroup ? cfg.MB_UPLOAD_JID : from;
                                 // daily limit check again (the user may have several lists open)
                                 if (limited && (await mbGetUsage(userKey)) >= cfg.MB_DAILY_LIMIT) {
