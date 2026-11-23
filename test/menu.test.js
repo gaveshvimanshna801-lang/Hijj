@@ -250,7 +250,7 @@ test('.cz quality list accepts "0" and "N*" (extras)', () => {
 });
 
 const panel = require('../lib/panel');
-test('panel: only Language, Mode and Prefix; mode/prefix/lang apply and validate', () => {
+test('panel: only Language, Mode, Prefix; mode/prefix/lang apply and validate', () => {
     assert.deepStrictEqual(Object.keys(panel.ITEMS), ['1.1', '1.2', '1.3']);
     const cfg = panel.makeDefaults({ PREFIX: '.' });
     assert.strictEqual(cfg.MODE, 'public');
@@ -261,6 +261,9 @@ test('panel: only Language, Mode and Prefix; mode/prefix/lang apply and validate
     assert.ok(panel.applySetting(cfg, '1.3', '!').ok); assert.strictEqual(cfg.PREFIX, '!');
     assert.ok(!panel.applySetting(cfg, '1.3', 'abcd').ok);
     assert.ok(panel.applySetting(cfg, '1.1', 'si').ok); assert.strictEqual(cfg.LANG, 'si');
+    assert.ok(!panel.applySetting(cfg, '1.4', 'My footer').ok);   // footer / bot image are not settings any more
+    assert.strictEqual(panel.normalize({ BOT_FOOTER: 'old saved footer', RCD_IMAGE_PATH: 'https://old/x.png' }).BOT_FOOTER, panel.makeDefaults().BOT_FOOTER);
+    assert.strictEqual(panel.normalize({ RCD_IMAGE_PATH: 'https://old/x.png' }).RCD_IMAGE_PATH, '');
     assert.ok(!panel.applySetting(cfg, '2.1', 'x').ok);
     assert.strictEqual(panel.normalize({ MODE: 'inbox' }).MODE, 'inbox');
     assert.strictEqual(panel.normalize({ MODE: 'zzz' }).MODE, 'public');
