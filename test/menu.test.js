@@ -142,13 +142,13 @@ test('request-group note is shown only when .mb is listed', () => {
 });
 
 test('mb/cz/ss pick lists stay open for more picks (no stop() before onPick)', () => {
-    const start = pairSrc.indexOf('const awaitPick = (listId, max, onPick) => {');
+    const start = pairSrc.indexOf('const awaitPick = (listId, max, onPick, opts = {}) => {');
     const block = pairSrc.slice(start, pairSrc.indexOf("await reply(`🔍 Searching ${srcName}"));
     assert.ok(block.includes('inFlight') && block.includes('resetTimer'));
     assert.ok(!/\n\s*stop\(\);\s*\n\s*try \{\s*\n\s*await onPick/.test(block));
 });
 
-const { cleanTitle, tmdbLookup, tmdbCard } = require('../lib/tmdb');
+const { cleanTitle, tmdbLookup, tmdbCard, tmdbListCard } = require('../lib/tmdb');
 
 test('TMDB: title cleaning', () => {
     assert.deepStrictEqual(cleanTitle('The Third Murder (2026) Sinhala Subtitles | සිංහල උපසිරැසි සමඟ'), { title: 'The Third Murder', year: 2026 });
@@ -239,3 +239,17 @@ atest('TMDB: card with qualities stays under 1000 chars and lists numbered quali
     for (const [name, fn] of asyncTests) { await fn(); passed++; console.log('✔', name); }
     console.log(`\n${passed} tests passed`);
 })().catch(e => { console.error('✖ FAILED:', e.message); process.exit(1); });
+
+test('TMDB: quality-list card has the "0" details option, the "N*" hint and the numbered qualities', () => {
+    const info = { title: 'Anbil Avan', rating: '7.0', release: '2026-10-02', runtime: '2h 38m', directors: ['R. Kaarthikeyan'], cast: ['A'], genres: ['Romance'], overview: 'Story. '.repeat(200) };
+    const card = tmdbListCard(info, { qualities: ['WEB-DL 480p [800 MB]', 'WEB-DL 720p [1.6 GB]'], footer: '> foot' });
+    assert.ok(card.includes('*0* | Send movie details card'));
+    assert.ok(card.includes('Ex: 1*'));
+    assert.ok(card.includes('*1* | WEB-DL 480p [800 MB]') && card.includes('*2* | WEB-DL 720p [1.6 GB]'));
+    assert.ok(card.length <= 1000 + 30);
+});
+
+test('.cz quality list accepts "0" and "N*" (extras)', () => {
+    assert.ok(pairSrc.includes('tmdbListCard(tmdb'));
+    assert.ok(pairSrc.includes('{ extras: !!tmdb }'));
+});
