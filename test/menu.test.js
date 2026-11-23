@@ -51,7 +51,7 @@ test('every menu command has a description in every language', () => {
 test('MB-only mode shows only commands the bot will answer', () => {
     const ctx = baseCtx({ mbOnly: true, canAdmin: false });
     const shown = menu.getCategories(ctx).flatMap(c => c.cmds.flatMap(x => x.names));
-    assert.deepStrictEqual(shown.sort(), ['cz', 'cinesubz', 'mb', 'moviebox'].sort());
+    assert.deepStrictEqual(shown.sort(), ['cz', 'cinesubz', 'mb', 'moviebox', 'pair'].sort());
     for (const n of shown) assert.ok(MB_ALLOWED.includes(n));
 });
 
@@ -87,9 +87,9 @@ test('ss2 is hidden when puppeteer is not installed', () => {
 test('empty category is dropped and numbers stay 1..n', () => {
     const ctx = baseCtx({ mbOnly: true, canAdmin: false });
     const cats = menu.getCategories(ctx);
-    assert.deepStrictEqual(cats.map(c => c.id), ['movies']);
+    assert.deepStrictEqual(cats.map(c => c.id), ['movies', 'tools']);
     const text = menu.buildMainMenu(ctx, info, cats);
-    assert.ok(text.includes('*1* |') && !text.includes('*2* |'));
+    assert.ok(text.includes('*1* |') && text.includes('*2* |') && !text.includes('*3* |'));
 });
 
 test('main menu renders in English and Sinhala', () => {
@@ -223,31 +223,26 @@ atest('TMDB: network error -> null (bot falls back to the old card)', async () =
     assert.strictEqual(await tmdbLookup('Anbil Avan', 2026, { key: 'k', http }), null);
 });
 
-atest('TMDB: card with qualities stays under 1000 chars and lists numbered qualities', async () => {
+atest('TMDB: list card (boxed style) stays under 1000 chars and lists numbered qualities', async () => {
     const http = fakeHttp([{ id: 7, release_date: '2026-10-02' }], DETAIL);
     const info = await tmdbLookup('Anbil Avan', 2026, { key: 'k', http });
     const footer = '╭━━〔 MIZUKI MD 〕━━╮\n┃ ✦ Powered by MIZUKI MD\n┃ ✦ Created by Gavesh Vimanshana\n╰━━━━━━━━━━━━━━╯';
-    const card = tmdbCard(info, { footer, qualities: ['WEB-DL 480p [800 MB]', 'WEB-DL 720p [1.6 GB]', 'WEB-DL 1080p [3.3 GB]'] });
+    const card = tmdbListCard(info, { name: 'MIZUKI MD', footer, qualities: ['WEB-DL 480p • 800 MB', 'WEB-DL 720p • 1.6 GB', 'WEB-DL 1080p • 3.3 GB'] });
     assert.ok(card.length <= 1000, `caption is ${card.length} chars`);
-    assert.ok(card.includes('*1* | WEB-DL 480p [800 MB]') && card.includes('*3* | WEB-DL 1080p [3.3 GB]'));
-    assert.ok(card.includes('👤 *Director:* R. Kaarthikeyan') && card.includes('⏳ 2h 38m') && card.includes('📅 2026-10-02'));
-    assert.ok(card.includes('MIZUKI MD'));
-    assert.ok(tmdbCard(info, { requestedBy: '@9477' }).includes('Requested by:* @9477'));
+    assert.ok(card.startsWith('╭━━〔 🌸 MIZUKI MD 〕━━╮'));
+    assert.ok(card.includes('〔 1 〕 WEB-DL 480p • 800 MB') && card.includes('〔 3 〕 WEB-DL 1080p • 3.3 GB'));
+    assert.ok(card.includes('🎥 Director : R. Kaarthikeyan') && card.includes('⏳ Runtime : 2h 38m') && card.includes('📆 Release : 02 October 2026'));
+    assert.ok(card.includes('🎭 Genre : Romance | Thriller') && card.includes('⭐ Rating : 7.0/10'));
+    assert.ok(card.includes('MOVIE SYNOPSIS') && card.includes('Reply 0 for Movie Details Card') && card.includes('Reply 1*'));
+    // details card (reply "0"): no quality list, has cast, can show who requested
+    const det = tmdbCard(info, { name: 'MIZUKI MD', requestedBy: '@9477' });
+    assert.ok(!det.includes('AVAILABLE QUALITIES') && det.includes('🌟 Cast : A, B') && det.includes('Requested by:* @9477'));
 });
 
 (async () => {
     for (const [name, fn] of asyncTests) { await fn(); passed++; console.log('✔', name); }
     console.log(`\n${passed} tests passed`);
 })().catch(e => { console.error('✖ FAILED:', e.message); process.exit(1); });
-
-test('TMDB: quality-list card has the "0" details option, the "N*" hint and the numbered qualities', () => {
-    const info = { title: 'Anbil Avan', rating: '7.0', release: '2026-10-02', runtime: '2h 38m', directors: ['R. Kaarthikeyan'], cast: ['A'], genres: ['Romance'], overview: 'Story. '.repeat(200) };
-    const card = tmdbListCard(info, { qualities: ['WEB-DL 480p [800 MB]', 'WEB-DL 720p [1.6 GB]'], footer: '> foot' });
-    assert.ok(card.includes('*0* | Send movie details card'));
-    assert.ok(card.includes('Ex: 1*'));
-    assert.ok(card.includes('*1* | WEB-DL 480p [800 MB]') && card.includes('*2* | WEB-DL 720p [1.6 GB]'));
-    assert.ok(card.length <= 1000 + 30);
-});
 
 test('.cz quality list accepts "0" and "N*" (extras)', () => {
     assert.ok(pairSrc.includes('tmdbListCard(tmdb'));
