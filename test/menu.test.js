@@ -198,6 +198,15 @@ atest('TMDB: v4 token is sent as a Bearer header', async () => {
     assert.strictEqual(http.calls[0].o.params.api_key, undefined);
 });
 
+atest('TMDB: year is sent to TMDB and a retry without year still rejects wrong years', async () => {
+    const http = fakeHttp([{ id: 1, release_date: '2017-09-09' }], DETAIL);
+    assert.strictEqual(await tmdbLookup('The Third Murder (2026)', null, { key: 'k', http }), null);
+    const searches = http.calls.filter(c => c.url.endsWith('/search/movie'));
+    assert.strictEqual(searches.length, 2);
+    assert.strictEqual(searches[0].o.params.year, 2026);
+    assert.strictEqual(searches[1].o.params.year, undefined);
+});
+
 atest('TMDB: backdrop image option', async () => {
     const http = fakeHttp([{ id: 7, release_date: '2026-10-02' }], DETAIL);
     const r = await tmdbLookup('Anbil Avan', 2026, { key: 'k', http, imageType: 'backdrop' });
