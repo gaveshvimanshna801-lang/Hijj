@@ -18,6 +18,7 @@ const {
 } = require("./lib/panel");
 const { LANGS, resolveLang, t } = require("./lib/lang");
 const menuLib = require("./lib/menu");
+const { tmdbLookup, tmdbCard, tmdbListCard } = require("./lib/tmdb");
 const {
     default: makeWASocket,
     useMultiFileAuthState,
@@ -73,6 +74,10 @@ const config = {
     MB_DAILY_LIMIT: parseInt(process.env.MB_DAILY_LIMIT ?? '3', 10) || 0,
     // MB-only mode: the bot only answers .mb, .menu and .settings. Set MB_ONLY=false to bring the other commands back.
     MB_ONLY: process.env.MB_ONLY !== 'false',
+    // TMDB (movie poster + details on the card). Free key: https://www.themoviedb.org/settings/api
+    // Set TMDB_API_KEY in the env. TMDB_IMAGE = 'poster' (default) or 'backdrop'. Without a key the old card is used.
+    TMDB_API_KEY: process.env.TMDB_API_KEY || '',
+    TMDB_IMAGE: process.env.TMDB_IMAGE === 'backdrop' ? 'backdrop' : 'poster',
     // TEST ONLY - hardcoded key. Remove before pushing to a public repo!
     API_KEY: process.env.API_KEY || 'chama_api_a5ffedb162c10a71304524ff40db1e2b',
     PAIR_BASE: process.env.PAIR_BASE || `http://localhost:${process.env.PORT || 8000}`
@@ -81,6 +86,7 @@ const config = {
 const PM2_NAME = process.env.PM2_NAME || 'LUZZY-MD';
 const MB_ALLOWED_COMMANDS = ['mb', 'moviebox', 'cz', 'cinesubz', 'menu', 'help', 'list', 'lang', 'language', 'settings', 'setting', 'panel', 'control', 'set'];
 
+let tmdbWarned = false;
 let puppeteerAvailable = null;
 const hasPuppeteer = () => {
     if (puppeteerAvailable === null) {
@@ -1793,7 +1799,8 @@ async function EmpirePair(number, res) {
                     }
                     // The list stays open for 5 minutes after the LAST pick, so people can reply to
                     // several numbers (eg: more than one quality). The same number can't run twice at once.
-                    const awaitPick = (listId, max, onPick) => {
+                    // opts.extras = true (quality list only): "0" -> details card, "N*" -> details card + file (onPick gets n=-1 for 0, star=true for N*)
+                    const awaitPick = (listId, max, onPick, opts = {}) => {
                         const inFlight = new Set();
                         let timer;
                         const handler = async ({ messages: rm }) => {
@@ -1806,24 +1813,28 @@ async function EmpirePair(number, res) {
                             if (rmsg.key.remoteJid !== from) return;
                             if ((rmsg.key.participant || rmsg.key.remoteJid) !== requester) return;
 
-                            const n = parseInt((ext.text || '').trim(), 10) - 1;
-                            if (isNaN(n) || n < 0 || n >= max) {
-                                await send(from, { text: `⚠️ Invalid choice! Send a number from 1 to ${max}.` }, { quoted: rmsg });
+                            const pm = (ext.text || '').trim().match(/^(\d+)\s*(\*)?$/);
+                            const n = pm ? parseInt(pm[1], 10) - 1 : NaN;
+                            const star = !!(pm && pm[2]) && !!opts.extras;
+                            const zeroOk = !!opts.extras && n === -1 && !pm[2];   // "0" = details card only
+                            if (isNaN(n) || (n < 0 && !zeroOk) || n >= max) {
+                                await send(from, { text: `⚠️ Invalid choice! Send a number from ${opts.extras ? '0' : '1'} to ${max}.` }, { quoted: rmsg });
                                 return;
                             }
-                            if (inFlight.has(n)) {
-                                await send(from, { text: `⏳ Option *${n + 1}* is already being processed. Please wait.` }, { quoted: rmsg });
+                            const flightKey = star ? `${n}*` : n;
+                            if (inFlight.has(flightKey)) {
+                                await send(from, { text: `⏳ Option *${pm[0]}* is already being processed. Please wait.` }, { quoted: rmsg });
                                 return;
                             }
-                            inFlight.add(n);
+                            inFlight.add(flightKey);
                             resetTimer();
                             try {
-                                await onPick(n, rmsg);
+                                await onPick(n, rmsg, star);
                             } catch (err) {
                                 console.error(`${srcName} error:`, err.message);
                                 await send(from, { text: '❌ Something went wrong. Try again later.' }, { quoted: rmsg });
                             } finally {
-                                inFlight.delete(n);
+                                inFlight.delete(flightKey);
                             }
                         };
                         const stop = () => {
@@ -1874,14 +1885,14 @@ async function EmpirePair(number, res) {
                             });
                             const d = info?.data || {};
                             const title = d.title || item.title;
-                            const poster = d.image || item.image;
+                            let poster = d.image || item.image;   // replaced by the TMDB poster when TMDB finds the movie
                             const sendCard = async (caption, target = from, mentions = []) => {
                                 const opts = target === from ? { quoted: rmsg } : {};
                                 try {
                                     if (!poster) throw new Error('no poster');
-                                    await send(target, { image: { url: poster }, caption, mentions }, opts);
+                                    return await send(target, { image: { url: poster }, caption, mentions }, opts);
                                 } catch {
-                                    await send(target, { text: caption, mentions }, opts);
+                                    return await send(target, { text: caption, mentions }, opts);
                                 }
                             };
 
@@ -1908,27 +1919,54 @@ async function EmpirePair(number, res) {
                                 .join(', ') || 'N/A';
                             const story = d.story ? (d.story.length > 220 ? d.story.slice(0, 220) + '...' : d.story) : 'N/A';
                             const movieBody = `*${title}*\n⭐ IMDB: ${d.imdb || d.rating || 'N/A'}\n📅 Year: ${d.year || 'N/A'}\n⏳ Duration: ${d.duration || 'N/A'}\n🌍 Country: ${d.country || 'N/A'}\n🎭 Genres: ${genres}\n📝 Story: ${story}`;
-                            const movieCard = formatMessage('🎬 MOVIE DETAILS', movieBody, cfg.BOT_FOOTER);
+                            // Details + poster from TMDB (null -> the old card built from the download API's own data)
+                            if (!config.TMDB_API_KEY && !tmdbWarned) {
+                                tmdbWarned = true;
+                                console.warn('TMDB_API_KEY is not set - movie cards use the download API details.');
+                            }
+                            const tmdb = await tmdbLookup(title, d.year, { key: config.TMDB_API_KEY, imageType: config.TMDB_IMAGE });
+                            if (tmdb?.image) poster = tmdb.image;
+                            const tail = footerTail(cfg.BOT_FOOTER);
+                            const movieCard = tmdb
+                                ? tmdbCard(tmdb, { footer: tail })
+                                : formatMessage('🎬 MOVIE DETAILS', movieBody, cfg.BOT_FOOTER);
                             // card for the upload group: also says who requested it
-                            const movieCardGroup = formatMessage('🎬 MOVIE DETAILS', `${movieBody}\n\n👤 *Requested by:* ${reqTag}`, cfg.BOT_FOOTER);
-                            await sendCard(movieCard);
+                            const movieCardGroup = tmdb
+                                ? tmdbCard(tmdb, { footer: tail, requestedBy: reqTag })
+                                : formatMessage('🎬 MOVIE DETAILS', `${movieBody}\n\n👤 *Requested by:* ${reqTag}`, cfg.BOT_FOOTER);
 
                             const allDownloads = d.downloads || [];
                             // WhatsApp max file size is 2GB: the request system only offers files that can be sent
                             const downloads = isMb ? allDownloads.filter(x => dlSizeMb(x.size) <= 2048) : allDownloads;
-                            if (!downloads.length) {
-                                await send(from, { text: allDownloads.length ? '⚠️ All available qualities are over 2GB (WhatsApp limit).' : '⚠️ No direct downloads available for this movie right now.' }, { quoted: rmsg });
-                                return;
+
+                            let qMsg;
+                            if (tmdb && downloads.length) {
+                                // one message: poster + details + quality list (reply with a number)
+                                const labels = downloads.map(dl => `${dl.quality || 'Direct MP4'} [${dl.size || 'Direct'}]`);
+                                qMsg = await sendCard(tmdbListCard(tmdb, { footer: tail, qualities: labels }));
+                            } else {
+                                await sendCard(movieCard);
+                                if (!downloads.length) {
+                                    await send(from, { text: allDownloads.length ? '⚠️ All available qualities are over 2GB (WhatsApp limit).' : '⚠️ No direct downloads available for this movie right now.' }, { quoted: rmsg });
+                                    return;
+                                }
+                                const qText = downloads
+                                    .map((dl, i) => `*${String(i + 1).padStart(2, '0')}* ➜ 💾 ${dl.quality || 'Direct MP4'} (${dl.size || 'Direct'})`)
+                                    .join('\n');
+                                qMsg = await send(from, {
+                                    text: formatMessage('📥 DOWNLOAD QUALITIES', `${qText}\n\n📌 Reply to this message with a number to get the file.`, cfg.BOT_FOOTER)
+                                }, { quoted: rmsg });
                             }
-                            const qText = downloads
-                                .map((dl, i) => `*${String(i + 1).padStart(2, '0')}* ➜ 💾 ${dl.quality || 'Direct MP4'} (${dl.size || 'Direct'})`)
-                                .join('\n');
-                            const qMsg = await send(from, {
-                                text: formatMessage('📥 DOWNLOAD QUALITIES', `${qText}\n\n📌 Reply to this message with a number to get the file.`, cfg.BOT_FOOTER)
-                            }, { quoted: rmsg });
                             if (!qMsg?.key?.id) return;
 
-                            awaitPick(qMsg.key.id, downloads.length, async (qn, qrmsg) => {
+                            awaitPick(qMsg.key.id, downloads.length, async (qn, qrmsg, star) => {
+                                // "0" -> just the (TMDB) details card
+                                if (qn === -1) {
+                                    await sendCard(movieCard);
+                                    return;
+                                }
+                                // "1*" -> details card first, then the file
+                                if (star) await sendCard(movieCard);
                                 const dl = downloads[qn];
                                 const fileUrl = dl.link || dl.download_link || dl.direct_link;
                                 // .mb files go to the configured group (if set); .cz and everything else to this chat
@@ -1987,7 +2025,7 @@ async function EmpirePair(number, res) {
                                         : `📤 ${reqTag} uploading *${title}* (${dl.quality || 'HD'}) to the group...\n_Large files can take a few minutes._${usageLine}`,
                                     mentions: [reqJid]
                                 }, { quoted: qrmsg });
-                            });
+                            }, { extras: !!tmdb });
                         });
                     } catch (err) {
                         console.error(`${srcName} search error:`, err.message);
