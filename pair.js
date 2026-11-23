@@ -16,6 +16,8 @@ const yts = require("yt-search");
 const {
     ITEMS, normalize, pickPanel, fill, logoSource, buildPanel, buildPrompt, applySetting
 } = require("./lib/panel");
+const { LANGS, resolveLang, t } = require("./lib/lang");
+const menuLib = require("./lib/menu");
 const {
     default: makeWASocket,
     useMultiFileAuthState,
@@ -35,8 +37,8 @@ const {
 const FIREBASE_URL = 'https://sutable-99848-default-rtdb.firebaseio.com/';
 
 const config = {
-    BOT_NAME: 'MINSOO MD REQUEST BOT🇯🇵🔥',
-    BOT_FOOTER: '╭━━〔 MINSOO MD REQUEST BOT🔥 〕━━╮\n┃ ✦ Powered by MINSOO MD -V1-\n┃ ✦ Created by  Vimanshana\n╰━━━━━━━━━━━━━━╯',
+    BOT_NAME: 'MIZUKI MD',
+    BOT_FOOTER: '╭━━〔 MIZUKI MD 〕━━╮\n┃ ✦ Powered by MIZUKI MD\n┃ ✦ Created by Gavesh Vimanshana\n╰━━━━━━━━━━━━━━╯',
     PREFIX: '.',
     MAX_RETRIES: 3,
     GROUP_INVITE_LINK: 'https://chat.whatsapp.com/KEVjV4cupLCJteG7FTPsk0?s=cl&p=a&iam=2',
@@ -77,7 +79,15 @@ const config = {
 };
 
 const PM2_NAME = process.env.PM2_NAME || 'LUZZY-MD';
-const MB_ALLOWED_COMMANDS = ['mb', 'moviebox', 'cz', 'cinesubz', 'menu', 'help', 'list', 'settings', 'setting', 'panel', 'control', 'set'];
+const MB_ALLOWED_COMMANDS = ['mb', 'moviebox', 'cz', 'cinesubz', 'menu', 'help', 'list', 'lang', 'language', 'settings', 'setting', 'panel', 'control', 'set'];
+
+let puppeteerAvailable = null;
+const hasPuppeteer = () => {
+    if (puppeteerAvailable === null) {
+        try { require.resolve('puppeteer'); puppeteerAvailable = true; } catch { puppeteerAvailable = false; }
+    }
+    return puppeteerAvailable;
+};
 
 // ===== MB upload queue: uploads to the upload group run one at a time, in request order =====
 const mbQueue = [];
@@ -949,6 +959,62 @@ async function EmpirePair(number, res) {
             await send(from, { text: formatMessage('⚙️ CONTROL PANEL', buildPrompt(id, cfg), cfg.BOT_FOOTER) }, { quoted: msg });
         };
 
+        // ===== Menu helpers =====
+        const menuListeners = new Map();   // `${chat}|${sender}` -> stop()
+        const MENU_PICK_MS = 5 * 60 * 1000;
+        const menuLogo = () => {
+            // custom logo from the panel wins; otherwise use the bundled menu banner
+            const isDefault = !cfg.RCD_IMAGE_PATH || cfg.RCD_IMAGE_PATH === config.RCD_IMAGE_PATH;
+            const file = path.join(__dirname, 'assets', 'menu.jpg');
+            if (isDefault && fs.existsSync(file)) return fs.readFileSync(file);
+            return logoSource(cfg);
+        };
+        const menuCtx = (lang, who) => ({
+            lang,
+            prefix: cfg.PREFIX,
+            canAdmin: who.canAdmin,
+            mbOnly: config.MB_ONLY,
+            allowed: MB_ALLOWED_COMMANDS,
+            banned: cfg.BANNED_COMMANDS,
+            hasPuppeteer: hasPuppeteer(),
+            mbLimit: cfg.MB_DAILY_LIMIT,
+            mbRequestJid: cfg.MB_REQUEST_JID
+        });
+        const fmtUptime = () => {
+            const up = Date.now() - (socketCreationTime.get(sanitizedNumber) || Date.now());
+            return `${Math.floor(up / 86400000)}d ${Math.floor(up / 3600000) % 24}h ${Math.floor(up / 60000) % 60}m ${Math.floor(up / 1000) % 60}s`;
+        };
+
+        // Wait for number replies to the menu message (same chat, same person, 5 min)
+        const watchMenuReplies = (menuId, from, who, ctx, cats) => {
+            const key = `${from}|${who.id}`;
+            menuListeners.get(key)?.();   // drop this person's older menu
+
+            const handler = async ({ messages: rm }) => {
+                const rmsg = rm?.[0];
+                if (!rmsg?.message || rmsg.key.remoteJid !== from) return;
+                if (rmsg.key.id && sentIds.has(rmsg.key.id)) return;
+                const ext = (rmsg.message.ephemeralMessage?.message || rmsg.message).extendedTextMessage;
+                if (ext?.contextInfo?.stanzaId !== menuId) return;
+                if (getSenderInfo(rmsg).id !== who.id) return;
+
+                const cat = menuLib.findCategory(cats, ext.text);
+                if (!cat) {
+                    await send(from, { text: t(ctx.lang, 'menu.invalid', { max: cats.length }) }, { quoted: rmsg });
+                    return;
+                }
+                await send(from, { text: `${menuLib.buildCategory(ctx, cat)}\n\n${footerTail(cfg.BOT_FOOTER)}` }, { quoted: rmsg });
+            };
+            const timer = setTimeout(() => stop(), MENU_PICK_MS);
+            const stop = () => {
+                clearTimeout(timer);
+                socket.ev.off('messages.upsert', handler);
+                if (menuListeners.get(key) === stop) menuListeners.delete(key);
+            };
+            menuListeners.set(key, stop);
+            socket.ev.on('messages.upsert', handler);
+        };
+
         const downloadImage = async (message) => {
             const stream = await downloadContentFromMessage(message, 'image');
             const chunks = [];
@@ -1117,10 +1183,65 @@ async function EmpirePair(number, res) {
                 case 'menu':
                 case 'help':
                 case 'list': {
-                    const limitTxt = cfg.MB_DAILY_LIMIT > 0 ? `${cfg.MB_DAILY_LIMIT} requests per user / day` : 'Unlimited';
-                    const menuText =
-`╭━━━〔 *${cfg.BOT_NAME}* 〕━━━╮\n┃ 🎬 Movie Request System\n┃ 🔰 Prefix : ${P}\n╰━━━━━━━━━━━━━━━╯\n\n╭─「 🎬 *MOVIES* 」\n│ ${P}mb <name> - Request a movie / series (MovieBox)\n│ ${P}cz <name> - Request a movie / series (CineSubz)\n│ 📊 Limit : ${limitTxt}\n╰─────────────\n\n╭─「 ⚙️ *SETTINGS* 」\n│ ${P}settings - Control Panel (Owner/Sudo)\n│ ${P}set 4.1 <number> - Daily user limit\n│ ${P}set 4.2 here - Request group\n│ ${P}set 4.3 here - Upload group (720p)\n│ ${P}set 4.4 here - Upload group 2 (480p)\n╰─────────────`;
-                    await sendWithLogo(from, formatMessage(cfg.BOT_NAME, menuText, cfg.BOT_FOOTER), { quoted: msg });
+                    // .menu            -> main menu (bot language)
+                    // .menu si / en    -> main menu in that language (one time, not saved)
+                    // .menu 1 / movies -> jump straight to a category
+                    const arg = body.trim().split(/\s+/)[1] || '';
+                    const argLang = /^\d+$/.test(arg) ? null : resolveLang(arg);   // "2" is a category, not a language
+                    const lang = argLang || cfg.LANG;
+                    const ctx = menuCtx(lang, who);
+                    const cats = menuLib.getCategories(ctx);
+
+                    const direct = arg && !argLang ? menuLib.findCategory(cats, arg) : null;
+                    if (direct) {
+                        await send(from, { text: `${menuLib.buildCategory(ctx, direct)}\n\n${footerTail(cfg.BOT_FOOTER)}` }, { quoted: msg });
+                        break;
+                    }
+
+                    const info = {
+                        botName: cfg.BOT_NAME,
+                        name: msg.pushName || who.id,
+                        owner: config.OWNER_NUMBER,
+                        uptime: fmtUptime(),
+                        ramMb: (process.memoryUsage().rss / 1024 / 1024).toFixed(0)
+                    };
+                    const caption = `${menuLib.buildMainMenu(ctx, info, cats)}\n\n${footerTail(cfg.BOT_FOOTER)}`;
+
+                    let sent;
+                    try {
+                        sent = await send(from, { image: menuLogo(), caption }, { quoted: msg });
+                    } catch (e) {
+                        console.warn('Menu image failed, falling back to text:', e.message);
+                        sent = await send(from, { text: caption }, { quoted: msg });
+                    }
+                    if (sent?.key?.id && cats.length) watchMenuReplies(sent.key.id, from, who, ctx, cats);
+                    break;
+                }
+
+                case 'lang':
+                case 'language': {
+                    const L = (k, v) => t(cfg.LANG, k, v);
+                    if (!who.canAdmin) {
+                        await reply(L('lang.ownerOnly'));
+                        break;
+                    }
+                    const arg = body.trim().split(/\s+/)[1] || '';
+                    if (!arg) {
+                        const cur = LANGS[cfg.LANG];
+                        const list = Object.entries(LANGS).map(([c, l]) => `• *${c}* – ${l.flag} ${l.native}`).join('\n');
+                        await reply(`*${L('lang.title')}*\n\n${L('lang.current', cur)}\n\n${L('lang.list')}\n${list}\n\n${L('lang.how', { prefix: P })}`);
+                        break;
+                    }
+                    const code = resolveLang(arg);
+                    if (!code) {
+                        await reply(L('lang.invalid', { codes: Object.keys(LANGS).join(', ') }));
+                        break;
+                    }
+                    cfg.LANG = code;
+                    let text = t(code, 'lang.changed', LANGS[code]);
+                    try { await savePanelSettings(botNumber, cfg); }
+                    catch (e) { text += `\n\n${t(code, 'lang.saveFailed')}`; }
+                    await reply(text);
                     break;
                 }
 
@@ -1779,17 +1900,22 @@ async function EmpirePair(number, res) {
                                 await send(from, { text: allDownloads.length ? '⚠️ All available qualities are over 2GB (WhatsApp limit).' : '⚠️ No direct downloads available for this movie right now.' }, { quoted: rmsg });
                                 return;
                             }
-                            // opts.first = false -> 2nd+ file of an auto request: no extra limit check / usage count / details card
-                            const startUpload = async (dl, qrmsg, opts = {}) => {
-                                const first = opts.first !== false;
-                                const showCard = opts.card !== undefined ? opts.card : first;   // details card in the target group
+                            const qText = downloads
+                                .map((dl, i) => `*${String(i + 1).padStart(2, '0')}* ➜ 💾 ${dl.quality || 'Direct MP4'} (${dl.size || 'Direct'})`)
+                                .join('\n');
+                            const qMsg = await send(from, {
+                                text: formatMessage('📥 DOWNLOAD QUALITIES', `${qText}\n\n📌 Reply to this message with a number to get the file.`, cfg.BOT_FOOTER)
+                            }, { quoted: rmsg });
+                            if (!qMsg?.key?.id) return;
+
+                            awaitPick(qMsg.key.id, downloads.length, async (qn, qrmsg) => {
+                                const dl = downloads[qn];
                                 const fileUrl = dl.link || dl.download_link || dl.direct_link;
                                 // .mb files go to the configured group (if set), everything else to this chat
-                                const upJid = opts.target || cfg.MB_UPLOAD_JID;
-                                const toGroup = isMb && !!upJid;
-                                const fileTarget = toGroup ? upJid : from;
+                                const toGroup = isMb && !!cfg.MB_UPLOAD_JID;
+                                const fileTarget = toGroup ? cfg.MB_UPLOAD_JID : from;
                                 // daily limit check again (the user may have several lists open)
-                                if (first && limited && (await mbGetUsage(userKey)) >= cfg.MB_DAILY_LIMIT) {
+                                if (limited && (await mbGetUsage(userKey)) >= cfg.MB_DAILY_LIMIT) {
                                     await send(from, { text: `⛔ ${reqTag} your daily limit is over (${cfg.MB_DAILY_LIMIT}/${cfg.MB_DAILY_LIMIT}).\nPlease try again tomorrow.`, mentions: [reqJid] }, { quoted: qrmsg });
                                     return;
                                 }
@@ -1798,7 +1924,7 @@ async function EmpirePair(number, res) {
                                     let sendUrl = fileUrl;
                                     try {
                                         if (isCz) sendUrl = await czResolve(dl);   // fresh direct link
-                                        if (toGroup && showCard) await sendCard(movieCardGroup, fileTarget, [reqJid]);   // details card first (once)
+                                        if (toGroup) await sendCard(movieCardGroup, fileTarget, [reqJid]);   // details card first
                                         await send(fileTarget, {
                                             document: { url: sendUrl },
                                             mimetype: 'video/mp4',
@@ -1815,7 +1941,7 @@ async function EmpirePair(number, res) {
 
                                 // Not the group flow: upload right away in this chat
                                 if (!toGroup) {
-                                    if (limited && first) await mbAddUsage(userKey);
+                                    if (limited) await mbAddUsage(userKey);
                                     await send(from, { text: `📤 Sending *${title}* (${dl.quality || 'HD'}) ...\n_Large files can take a few minutes._` }, { quoted: qrmsg });
                                     await doUpload();
                                     return;
@@ -1826,8 +1952,8 @@ async function EmpirePair(number, res) {
                                     await send(from, { text: `⚠️ *${title}* (${dl.quality || 'HD'}) is already in the upload queue.` }, { quoted: qrmsg });
                                     return;
                                 }
-                                const usedNow = (limited && first) ? await mbAddUsage(userKey) : 0;
-                                const usageLine = (limited && first) ? `\n📊 Today: *${usedNow}/${cfg.MB_DAILY_LIMIT}* requests` : '';
+                                const usedNow = limited ? await mbAddUsage(userKey) : 0;
+                                const usageLine = limited ? `\n📊 Today: *${usedNow}/${cfg.MB_DAILY_LIMIT}* requests` : '';
                                 let myPosition = 0;
                                 myPosition = mbEnqueue(fileUrl, async () => {
                                     if (myPosition > 1) {
@@ -1841,43 +1967,7 @@ async function EmpirePair(number, res) {
                                         : `📤 ${reqTag} uploading *${title}* (${dl.quality || 'HD'}) to the group...\n_Large files can take a few minutes._${usageLine}`,
                                     mentions: [reqJid]
                                 }, { quoted: qrmsg });
-                            };
-
-                            // ---- .cz: auto-send 720p (-> upload group) + 480p (-> upload group 2, else same group) ----
-                            if (isCz) {
-                                const has = (x, q) => new RegExp(q, 'i').test(`${x.quality || ''} ${x.name || ''}`);
-                                const pickQ = (q) => downloads.find(x => has(x, q));          // already <= 2GB
-                                const tooBig = (q) => allDownloads.some(x => has(x, q) && dlSizeMb(x.size) > 2048);
-                                const g1 = cfg.MB_UPLOAD_JID;
-                                const g2 = cfg.MB_UPLOAD_JID2 || cfg.MB_UPLOAD_JID;
-                                const plan = [
-                                    { dl: pickQ('720'), target: g1, q: '720p' },
-                                    { dl: pickQ('480'), target: g2, q: '480p' }
-                                ];
-                                const skipped = plan.filter(p => !p.dl).map(p => `${p.q} (${tooBig(p.q.slice(0, 3)) ? 'over 2GB' : 'not available'})`);
-                                const auto = plan.filter(p => p.dl);
-                                if (auto.length) {
-                                    await send(from, { text: `⚡ Auto mode: ${auto.map(p => p.dl.quality || p.q).join(' + ')} will be uploaded automatically.${skipped.length ? `\n⚠️ Skipped: ${skipped.join(', ')}` : ''}` }, { quoted: rmsg });
-                                    const cardSent = new Set();
-                                    for (let i = 0; i < auto.length; i++) {
-                                        const key = auto[i].target || from;
-                                        await startUpload(auto[i].dl, rmsg, { first: i === 0, target: auto[i].target, card: !cardSent.has(key) });
-                                        cardSent.add(key);
-                                    }
-                                    return;
-                                }
-                                await send(from, { text: `⚠️ 720p / 480p not available (${skipped.join(', ')}). Pick a quality below.` }, { quoted: rmsg });
-                            }
-
-                            const qText = downloads
-                                .map((dl, i) => `*${String(i + 1).padStart(2, '0')}* ➜ 💾 ${dl.quality || 'Direct MP4'} (${dl.size || 'Direct'})`)
-                                .join('\n');
-                            const qMsg = await send(from, {
-                                text: formatMessage('📥 DOWNLOAD QUALITIES', `${qText}\n\n📌 Reply to this message with a number to get the file.`, cfg.BOT_FOOTER)
-                            }, { quoted: rmsg });
-                            if (!qMsg?.key?.id) return;
-
-                            awaitPick(qMsg.key.id, downloads.length, (qn, qrmsg) => startUpload(downloads[qn], qrmsg));
+                            });
                         });
                     } catch (err) {
                         console.error(`${srcName} search error:`, err.message);
