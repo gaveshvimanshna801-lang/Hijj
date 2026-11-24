@@ -51,7 +51,7 @@ test('every menu command has a description in every language', () => {
 test('MB-only mode shows only commands the bot will answer', () => {
     const ctx = baseCtx({ mbOnly: true, canAdmin: false });
     const shown = menu.getCategories(ctx).flatMap(c => c.cmds.flatMap(x => x.names));
-    assert.deepStrictEqual(shown.sort(), ['alive', 'cz', 'cinesubz', 'mb', 'moviebox', 'pair', 'ping'].sort());
+    assert.deepStrictEqual(shown.sort(), ['alive', 'cartoon', 'cartoons', 'ct', 'cz', 'cinesubz', 'mb', 'moviebox', 'pair', 'ping'].sort());
     for (const n of shown) assert.ok(MB_ALLOWED.includes(n));
 });
 
@@ -129,8 +129,8 @@ test('t() falls back to English for unknown language / key', () => {
 });
 
 test('.cz is not tied to the request/upload group in pair.js', () => {
-    assert.ok(/isMb && !isCz && cfg\.MB_REQUEST_JID/.test(pairSrc));
-    assert.ok(/const toGroup = isMb && !isCz && !!cfg\.MB_UPLOAD_JID/.test(pairSrc));
+    assert.ok(/isMb && !isCz && !isCt && cfg\.MB_REQUEST_JID/.test(pairSrc));
+    assert.ok(/const toGroup = isMb && !isCz && !isCt && !!cfg\.MB_UPLOAD_JID/.test(pairSrc));
 });
 
 test('request-group note is shown only when .mb is listed', () => {
@@ -246,7 +246,7 @@ atest('TMDB: list card (boxed style) stays under 1000 chars and lists numbered q
 
 test('.cz quality list accepts "0" and "N*" (extras)', () => {
     assert.ok(pairSrc.includes('tmdbListCard(tmdb'));
-    assert.ok(pairSrc.includes('{ extras: !!tmdb }'));
+    assert.ok(pairSrc.includes('}, { extras });') && pairSrc.includes('sendCard, !!tmdb);'));
 });
 
 const panel = require('../lib/panel');
@@ -269,4 +269,23 @@ test('panel: only Language, Mode, Prefix; mode/prefix/lang apply and validate', 
     assert.strictEqual(panel.normalize({ MODE: 'zzz' }).MODE, 'public');
     const text = panel.buildPanel(cfg);
     assert.ok(text.includes('1.1') && text.includes('1.2') && text.includes('1.3') && !text.includes('4.1'));
+});
+
+test('.cz TV series: tv/search, tv/info (seasons -> episodes) and tv/dl are wired in', () => {
+    for (const k of ['CZ_TV_SEARCH_URL', 'CZ_TV_INFO_URL', 'CZ_TV_DL_URL']) assert.ok(pairSrc.includes(k), k);
+    assert.ok(pairSrc.includes('cinesubz/tv/search') && pairSrc.includes('cinesubz/tv/info') && pairSrc.includes('cinesubz/tv/dl'));
+    assert.ok(pairSrc.includes('showEpisodes') && pairSrc.includes('ep.episode_url'));
+    // episode title cleaning used for the list ("2 Warriors Feb. 22, 2024" -> "Warriors")
+    const epName = (n) => String(n).replace(/^\d+\s*/, '').replace(/\s+[A-Z][a-z]{2}\.? \d{1,2}, \d{4}$/, '').trim();
+    assert.strictEqual(epName('2 Warriors Feb. 22, 2024'), 'Warriors');
+    assert.strictEqual(epName('8 Legends [S01 Last Episode] Feb. 22, 2024'), 'Legends [S01 Last Episode]');
+    assert.strictEqual(epName('1 Somewhere Safe Jun. 25, 2026'), 'Somewhere Safe');
+});
+
+test('.cartoon: cartoons.lk search + infodl endpoints, command aliases and own-chat delivery', () => {
+    assert.ok(pairSrc.includes('cinesubz') && pairSrc.includes('movies/cartoons/search') && pairSrc.includes('movies/cartoons/infodl'));
+    for (const a of ["case 'cartoon':", "case 'cartoons':", "case 'ct':"]) assert.ok(pairSrc.includes(a), a);
+    assert.ok(pairSrc.includes("!isCz && !isCt && !!cfg.MB_UPLOAD_JID"));
+    const lookup = (t) => t.split('|')[0].replace(/sinhala\s*dubbed(\s*movie)?/ig, '').trim();
+    assert.strictEqual(lookup('Rango Sinhala Dubbed Movie | සිංහල හඩකැවූ රැන්ගෝ චිත්‍රපටය'), 'Rango');
 });
