@@ -79,7 +79,7 @@ const config = {
     TMDB_API_KEY: process.env.TMDB_API_KEY || '',
     TMDB_IMAGE: process.env.TMDB_IMAGE === 'backdrop' ? 'backdrop' : 'poster',
     // TEST ONLY - hardcoded key. Remove before pushing to a public repo!
-    API_KEY: process.env.API_KEY || 'chama_api_a5ffedb162c10a71304524ff40db1e2b',
+    API_KEY: process.env.API_KEY || 'chama_api_3565b8bca197d421ee61b5b92b0f852e',
     PAIR_BASE: process.env.PAIR_BASE || `http://localhost:${process.env.PORT || 8000}`
 };
 
