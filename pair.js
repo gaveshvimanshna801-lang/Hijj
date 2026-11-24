@@ -61,6 +61,13 @@ const config = {
     CZ_SEARCH_URL: process.env.CZ_SEARCH_URL || 'https://api.chamindu.site/api/v1/movies/cinesubz/search',
     CZ_DETAIL_URL: process.env.CZ_DETAIL_URL || 'https://api.chamindu.site/api/v1/movies/cinesubz/infodl',
     CZ_RESOLVE_URL: process.env.CZ_RESOLVE_URL || 'https://api.chamindu.site/api/v1/movies/cinesubz/resolve',
+    // TV series: search -> info (seasons + episodes) -> dl (qualities of one episode)
+    // Cartoons.lk (Sinhala dubbed cartoons): search -> infodl (downloads: [{ name, link }])
+    CT_SEARCH_URL: process.env.CT_SEARCH_URL || 'https://api.chamindu.site/api/v1/movies/cartoons/search',
+    CT_DETAIL_URL: process.env.CT_DETAIL_URL || 'https://api.chamindu.site/api/v1/movies/cartoons/infodl',
+    CZ_TV_SEARCH_URL: process.env.CZ_TV_SEARCH_URL || 'https://api.chamindu.site/api/v1/movies/cinesubz/tv/search',
+    CZ_TV_INFO_URL: process.env.CZ_TV_INFO_URL || 'https://api.chamindu.site/api/v1/movies/cinesubz/tv/info',
+    CZ_TV_DL_URL: process.env.CZ_TV_DL_URL || 'https://api.chamindu.site/api/v1/movies/cinesubz/tv/dl',
     MOVIEBOX_SEARCH_URL: process.env.MOVIEBOX_SEARCH_URL || 'https://api.chamindu.site/api/v1/movie/moviebox/search',
     MOVIEBOX_DETAIL_URL: process.env.MOVIEBOX_DETAIL_URL || 'https://api.chamindu.site/api/v1/movie/moviebox/info',
     // YouTube MP3 API (no key needed)
@@ -79,12 +86,12 @@ const config = {
     TMDB_API_KEY: process.env.TMDB_API_KEY || '',
     TMDB_IMAGE: process.env.TMDB_IMAGE === 'backdrop' ? 'backdrop' : 'poster',
     // TEST ONLY - hardcoded key. Remove before pushing to a public repo!
-    API_KEY: process.env.API_KEY || 'chama_api_3565b8bca197d421ee61b5b92b0f852e',
+    API_KEY: process.env.API_KEY || 'chama_api_a5ffedb162c10a71304524ff40db1e2b',
     PAIR_BASE: process.env.PAIR_BASE || `http://localhost:${process.env.PORT || 8000}`
 };
 
 const PM2_NAME = process.env.PM2_NAME || 'LUZZY-MD';
-const MB_ALLOWED_COMMANDS = ['mb', 'moviebox', 'cz', 'cinesubz', 'menu', 'help', 'list', 'lang', 'language', 'settings', 'setting', 'panel', 'control', 'set', 'forward', 'forword', 'fwd', 'jid', 'pair', 'alive', 'ping'];
+const MB_ALLOWED_COMMANDS = ['mb', 'moviebox', 'cz', 'cinesubz', 'menu', 'help', 'list', 'lang', 'language', 'settings', 'setting', 'panel', 'control', 'set', 'forward', 'forword', 'fwd', 'jid', 'pair', 'alive', 'ping', 'cartoon', 'cartoons', 'ct'];
 
 let tmdbWarned = false;
 let puppeteerAvailable = null;
@@ -1829,12 +1836,16 @@ async function EmpirePair(number, res) {
                 case 'moviebox':
                 case 'mb':
                 case 'cinesubz':
-                case 'cz': {
+                case 'cz':
+                case 'cartoon':
+                case 'cartoons':
+                case 'ct': {
                     let query = body.split(/\s+/).slice(1).join(' ').trim();
                     const isCz = command === 'cz' || command === 'cinesubz';
+                    const isCt = command === 'cartoon' || command === 'cartoons' || command === 'ct';   // cartoons.lk
                     // .cz <name> forword <jid>  -> the card + file are sent to that jid instead of this chat (Owner / Sudo)
                     let fwdJids = [];
-                    if (isCz) {
+                    if (isCz || isCt) {
                         // trailing jids (and the words forward / forword / fwd / -f) are taken off the query
                         const parts = query.split(/\s+/);
                         const found = [];
@@ -1858,18 +1869,18 @@ async function EmpirePair(number, res) {
                     }
                     const fwdJid = fwdJids[0] || null;
                     if (!query) {
-                        await reply(`🎬 Usage: ${P}${command} avatar\n${P}${command} game of thrones${isCz && who.canAdmin ? `\n${P}${command} avatar forword 120363aaaa@g.us 120363bbbb@g.us` : ''}`);
+                        await reply(`🎬 Usage: ${P}${command} avatar\n${P}${command} game of thrones${(isCz || isCt) && who.canAdmin ? `\n${P}${command} avatar forword 120363aaaa@g.us 120363bbbb@g.us` : ''}`);
                         break;
                     }
-                    const isMb = command === 'moviebox' || command === 'mb' || isCz;   // request system: groups, queue, daily limit
+                    const isMb = command === 'moviebox' || command === 'mb' || isCz || isCt;   // request system: groups, queue, daily limit
                     // .cz sends the file to the chat it was used in, so it has no request/upload group
-                    if (isMb && !isCz && cfg.MB_REQUEST_JID && from !== cfg.MB_REQUEST_JID && !who.canAdmin) {
+                    if (isMb && !isCz && !isCt && cfg.MB_REQUEST_JID && from !== cfg.MB_REQUEST_JID && !who.canAdmin) {
                         await reply('⚠️ Please use this command in the movie request group.');
                         break;
                     }
-                    const srcName = isCz ? 'CineSubz' : isMb ? 'MovieBox' : 'SinhalaSub';
-                    const searchUrl = isCz ? config.CZ_SEARCH_URL : isMb ? config.MOVIEBOX_SEARCH_URL : config.SINHALASUB_SEARCH_URL;
-                    const detailUrl = isCz ? config.CZ_DETAIL_URL : isMb ? config.MOVIEBOX_DETAIL_URL : config.SINHALASUB_DETAIL_URL;
+                    const srcName = isCt ? 'Cartoons' : isCz ? 'CineSubz' : isMb ? 'MovieBox' : 'SinhalaSub';
+                    const searchUrl = isCt ? config.CT_SEARCH_URL : isCz ? config.CZ_SEARCH_URL : isMb ? config.MOVIEBOX_SEARCH_URL : config.SINHALASUB_SEARCH_URL;
+                    const detailUrl = isCt ? config.CT_DETAIL_URL : isCz ? config.CZ_DETAIL_URL : isMb ? config.MOVIEBOX_DETAIL_URL : config.SINHALASUB_DETAIL_URL;
 
                     // Wait (5 min) for a number reply to a specific bot message
                     const requester = msg.key.participant || from;
@@ -1878,7 +1889,7 @@ async function EmpirePair(number, res) {
                         || (msg.key.fromMe ? jidNormalizedUser(socket.user.id) : from);
                     const userKey = String(reqJid).split('@')[0].split(':')[0];
                     const reqTag = '@' + userKey;
-                    const limited = isMb && !isCz && cfg.MB_DAILY_LIMIT > 0 && !who.canAdmin;   // .cz has no daily limit
+                    const limited = isMb && !isCz && !isCt && cfg.MB_DAILY_LIMIT > 0 && !who.canAdmin;   // .cz has no daily limit
                     if (limited) {
                         const used = await mbGetUsage(userKey);
                         if (used >= cfg.MB_DAILY_LIMIT) {
@@ -1938,116 +1949,8 @@ async function EmpirePair(number, res) {
                         resetTimer();
                     };
 
-                    try {
-                        await reply(`🔍 Searching ${srcName}: *${query}* ...`);
-                        const { data } = await axios.get(searchUrl, {
-                            params: { q: query, api_key: config.API_KEY },
-                            timeout: 30000
-                        });
-                        const raw = data?.data ?? data?.results ?? [];
-                        const results = (Array.isArray(raw) ? raw : raw.results || []).slice(0, 15);
-                        if (!results.length) {
-                            await reply('❌ No results found.');
-                            break;
-                        }
-
-                        const isTv = (it) => it.type === 'tvshows' || it.type === 'tv';
-                        const listText = results
-                            .map((it, i) => `*${String(i + 1).padStart(2, '0')}* ➜ ${isTv(it) ? '📺' : '🎥'} ${(it.title || 'Movie').slice(0, 40)} (${it.year || 'N/A'})`)
-                            .join('\n');
-                        const listMsg = await send(from, {
-                            text: formatMessage(
-                                `🎬 ${srcName.toUpperCase()} SEARCH`,
-                                `🎯 Query: _${query}_\n📊 Total: ${results.length}\n\n${listText}\n\n📌 Reply to this message with a number.`,
-                                cfg.BOT_FOOTER
-                            )
-                        }, { quoted: msg });
-                        if (!listMsg?.key?.id) break;
-
-                        awaitPick(listMsg.key.id, results.length, async (n, rmsg) => {
-                            const item = results[n];
-                            await send(from, { text: '⏳ Getting details...' }, { quoted: rmsg });
-
-                            const { data: info } = await axios.get(detailUrl, {
-                                params: { q: item.link || item.url, api_key: config.API_KEY },
-                                timeout: 30000
-                            });
-                            const d = info?.data || {};
-                            const title = d.title || item.title;
-                            let poster = d.image || item.image;   // replaced by the TMDB poster when TMDB finds the movie
-                            const sendCard = async (caption, target = from, mentions = []) => {
-                                const opts = target === from ? { quoted: rmsg } : {};
-                                try {
-                                    if (!poster) throw new Error('no poster');
-                                    return await send(target, { image: { url: poster }, caption, mentions }, opts);
-                                } catch {
-                                    return await send(target, { text: caption, mentions }, opts);
-                                }
-                            };
-
-                            // ---- TV series: details + episode links ----
-                            if (isTv(item)) {
-                                const episodes = d.episodes || d.downloads || [];
-                                await sendCard(formatMessage(
-                                    '📺 TV SERIES',
-                                    `*${title}*\n⭐ Rating: ${d.rating || d.imdb || 'N/A'}\n📅 Year: ${d.year || 'N/A'}\n🎬 Episodes: ${episodes.length}`,
-                                    cfg.BOT_FOOTER
-                                ));
-                                if (episodes.length) {
-                                    const epText = episodes.slice(0, 15)
-                                        .map((ep, i) => `*Episode ${i + 1}:* ${ep.name || ep.title || `Episode ${i + 1}`}\n🔗 ${ep.download_link || ep.link || ep.url}`)
-                                        .join('\n\n');
-                                    await send(from, { text: formatMessage('📥 EPISODES', epText, cfg.BOT_FOOTER) }, { quoted: rmsg });
-                                }
-                                return;
-                            }
-
-                            // ---- Movie: details + quality list ----
-                            const genres = (Array.isArray(d.genres) ? d.genres : [d.genres])
-                                .filter(g => g && !String(g).startsWith('#') && !/updated$/i.test(String(g)))
-                                .join(', ') || 'N/A';
-                            const story = d.story ? (d.story.length > 220 ? d.story.slice(0, 220) + '...' : d.story) : 'N/A';
-                            const movieBody = `*${title}*\n⭐ IMDB: ${d.imdb || d.rating || 'N/A'}\n📅 Year: ${d.year || 'N/A'}\n⏳ Duration: ${d.duration || 'N/A'}\n🌍 Country: ${d.country || 'N/A'}\n🎭 Genres: ${genres}\n📝 Story: ${story}`;
-                            // Details + poster from TMDB (null -> the old card built from the download API's own data)
-                            if (!config.TMDB_API_KEY && !tmdbWarned) {
-                                tmdbWarned = true;
-                                console.warn('TMDB_API_KEY is not set - movie cards use the download API details.');
-                            }
-                            const tmdb = await tmdbLookup(title, d.year, { key: config.TMDB_API_KEY, imageType: config.TMDB_IMAGE });
-                            if (tmdb?.image) poster = tmdb.image;
-                            const tail = footerTail(cfg.BOT_FOOTER);
-                            const movieCard = tmdb
-                                ? tmdbCard(tmdb, { name: cfg.BOT_NAME || config.BOT_NAME, footer: tail })
-                                : formatMessage('🎬 MOVIE DETAILS', movieBody, cfg.BOT_FOOTER);
-                            // card for the upload group: also says who requested it
-                            const movieCardGroup = tmdb
-                                ? tmdbCard(tmdb, { name: cfg.BOT_NAME || config.BOT_NAME, footer: tail, requestedBy: reqTag })
-                                : formatMessage('🎬 MOVIE DETAILS', `${movieBody}\n\n👤 *Requested by:* ${reqTag}`, cfg.BOT_FOOTER);
-
-                            const allDownloads = d.downloads || [];
-                            // WhatsApp max file size is 2GB: the request system only offers files that can be sent
-                            const downloads = isMb ? allDownloads.filter(x => dlSizeMb(x.size) <= 2048) : allDownloads;
-
-                            let qMsg;
-                            if (tmdb && downloads.length) {
-                                // one message: poster + details + quality list (reply with a number)
-                                const labels = downloads.map(dl => `${dl.quality || 'Direct MP4'} • ${dl.size || 'Direct'}`);
-                                qMsg = await sendCard(tmdbListCard(tmdb, { name: cfg.BOT_NAME || config.BOT_NAME, footer: tail, qualities: labels }));
-                            } else {
-                                await sendCard(movieCard);
-                                if (!downloads.length) {
-                                    await send(from, { text: allDownloads.length ? '⚠️ All available qualities are over 2GB (WhatsApp limit).' : '⚠️ No direct downloads available for this movie right now.' }, { quoted: rmsg });
-                                    return;
-                                }
-                                const qText = downloads
-                                    .map((dl, i) => `*${String(i + 1).padStart(2, '0')}* ➜ 💾 ${dl.quality || 'Direct MP4'} (${dl.size || 'Direct'})`)
-                                    .join('\n');
-                                qMsg = await send(from, {
-                                    text: formatMessage('📥 DOWNLOAD QUALITIES', `${qText}\n\n📌 Reply to this message with a number to get the file.`, cfg.BOT_FOOTER)
-                                }, { quoted: rmsg });
-                            }
-                            if (!qMsg?.key?.id) return;
-
+                    // Quality picker (movies and TV episodes): reply N -> file, 0 -> details card, N* -> card + file
+                    const pickQuality = (qMsg, downloads, title, movieCard, movieCardGroup, sendCard, extras) => {
                             awaitPick(qMsg.key.id, downloads.length, async (qn, qrmsg, star) => {
                                 // "0" -> just the (TMDB) details card
                                 if (qn === -1) {
@@ -2059,7 +1962,7 @@ async function EmpirePair(number, res) {
                                 const dl = downloads[qn];
                                 const fileUrl = dl.link || dl.download_link || dl.direct_link;
                                 // .mb files go to the configured group (if set); .cz and everything else to this chat
-                                const toGroup = isMb && !isCz && !!cfg.MB_UPLOAD_JID;
+                                const toGroup = isMb && !isCz && !isCt && !!cfg.MB_UPLOAD_JID;
                                 const fileTarget = fwdJid || (toGroup ? cfg.MB_UPLOAD_JID : from);   // first target; extra forword jids get the same file forwarded
                                 // daily limit check again (the user may have several lists open)
                                 if (limited && (await mbGetUsage(userKey)) >= cfg.MB_DAILY_LIMIT) {
@@ -2118,7 +2021,189 @@ async function EmpirePair(number, res) {
                                         : `📤 ${reqTag} uploading *${title}* (${dl.quality || 'HD'}) to the group...\n_Large files can take a few minutes._${usageLine}`,
                                     mentions: [reqJid]
                                 }, { quoted: qrmsg });
-                            }, { extras: !!tmdb });
+                            }, { extras });
+                    };
+
+                    try {
+                        await reply(`🔍 Searching ${srcName}: *${query}* ...`);
+                        const { data } = await axios.get(searchUrl, {
+                            params: { q: query, api_key: config.API_KEY },
+                            timeout: 30000
+                        });
+                        const raw = data?.data ?? data?.results ?? [];
+                        let results = (Array.isArray(raw) ? raw : raw.results || []);
+                        if (isCz) {
+                            // also search the TV-series endpoint and merge (no duplicates)
+                            try {
+                                const { data: tvData } = await axios.get(config.CZ_TV_SEARCH_URL, { params: { q: query, api_key: config.API_KEY }, timeout: 30000 });
+                                const seen = new Set(results.map(r => r.link || r.url));
+                                for (const r of (tvData?.data || [])) {
+                                    if (!seen.has(r.link || r.url)) { results.push({ ...r, type: r.type || 'tvshows' }); seen.add(r.link || r.url); }
+                                }
+                            } catch (e) { console.warn('CZ tv search failed:', e.message); }
+                        }
+                        results = results.slice(0, 15);
+                        if (!results.length) {
+                            await reply('❌ No results found.');
+                            break;
+                        }
+
+                        const isTv = (it) => it.type === 'tvshows' || it.type === 'tv';
+                        const listText = results
+                            .map((it, i) => `*${String(i + 1).padStart(2, '0')}* ➜ ${isTv(it) ? '📺' : '🎥'} ${(it.title || 'Movie').slice(0, 40)} (${it.year || 'N/A'})`)
+                            .join('\n');
+                        const listMsg = await send(from, {
+                            text: formatMessage(
+                                `🎬 ${srcName.toUpperCase()} SEARCH`,
+                                `🎯 Query: _${query}_\n📊 Total: ${results.length}\n\n${listText}\n\n📌 Reply to this message with a number.`,
+                                cfg.BOT_FOOTER
+                            )
+                        }, { quoted: msg });
+                        if (!listMsg?.key?.id) break;
+
+                        awaitPick(listMsg.key.id, results.length, async (n, rmsg) => {
+                            const item = results[n];
+                            await send(from, { text: '⏳ Getting details...' }, { quoted: rmsg });
+
+                            const { data: info } = await axios.get((isCz && isTv(item)) ? config.CZ_TV_INFO_URL : detailUrl, {
+                                params: { q: item.link || item.url, api_key: config.API_KEY },
+                                timeout: 30000
+                            });
+                            const d = info?.data || {};
+                            const title = d.title || item.title;
+                            let poster = d.image || item.image;   // replaced by the TMDB poster when TMDB finds the movie
+                            const sendCard = async (caption, target = from, mentions = []) => {
+                                const opts = target === from ? { quoted: rmsg } : {};
+                                try {
+                                    if (!poster) throw new Error('no poster');
+                                    return await send(target, { image: { url: poster }, caption, mentions }, opts);
+                                } catch {
+                                    return await send(target, { text: caption, mentions }, opts);
+                                }
+                            };
+
+                            // ---- TV series: details + episode links ----
+                            if (isTv(item) && isCz) {
+                                // CineSubz TV: seasons -> episodes -> qualities -> file
+                                const seasons = (d.seasons || []).filter(sn => sn.episodes?.length);
+                                const show = title.replace(/\s*\|.*$/, '').replace(/\s+TV\b.*$/i, '').trim() || title;
+                                const gen = (Array.isArray(d.genres) ? d.genres : []).filter(g => g && !String(g).startsWith('.') && !/^cinesubz$/i.test(g)).join(', ') || 'N/A';
+                                const epTotal = seasons.reduce((n, sn) => n + sn.episodes.length, 0);
+                                const story = d.story ? String(d.story).replace(/\s+/g, ' ').trim() : '';
+                                const tvCard = formatMessage(
+                                    '📺 TV SERIES',
+                                    `*${title}*\n⭐ Rating: ${d.rating || d.imdb || item.rating || 'N/A'}\n📅 Year: ${d.year || item.year || 'N/A'}\n🎭 Genres: ${gen}\n🗂️ Seasons: ${seasons.length}   🎬 Episodes: ${epTotal}` + (story ? `\n📝 ${story.length > 200 ? story.slice(0, 200) + '...' : story}` : ''),
+                                    cfg.BOT_FOOTER
+                                );
+                                if (!seasons.length) {
+                                    await sendCard(tvCard);
+                                    await send(from, { text: '⚠️ No episodes found for this series right now.' }, { quoted: rmsg });
+                                    return;
+                                }
+                                const epName = (e) => String(e.episode_name || '').replace(/^\d+\s*/, '').replace(/\s+[A-Z][a-z]{2}\.? \d{1,2}, \d{4}$/, '').trim();
+
+                                const showEpisodes = async (sn, fromMsg) => {
+                                    const eps = sn.episodes;
+                                    const epList = eps.map((e, i) => `*${String(i + 1).padStart(2, '0')}* ➜ 🎬 Episode ${e.episode_number}${epName(e) ? ' - ' + epName(e).slice(0, 40) : ''}`).join('\n');
+                                    const epMsg = await send(from, {
+                                        text: formatMessage(`📺 ${sn.season_name || 'Season ' + sn.season}`, `*${show}*\n🎬 Episodes: ${eps.length}\n\n${epList}\n\n📌 Reply to this message with an episode number.`, cfg.BOT_FOOTER)
+                                    }, { quoted: fromMsg });
+                                    if (!epMsg?.key?.id) return;
+                                    awaitPick(epMsg.key.id, eps.length, async (en, erm) => {
+                                        const ep = eps[en];
+                                        const epTitle = `${show} S${String(ep.season).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}${epName(ep) ? ' - ' + epName(ep) : ''}`;
+                                        await send(from, { text: `⏳ Getting links for *Episode ${ep.episode_number}* ...` }, { quoted: erm });
+                                        const { data: dlRes } = await axios.get(config.CZ_TV_DL_URL, { params: { q: ep.episode_url, api_key: config.API_KEY }, timeout: 45000 });
+                                        const dls = (Array.isArray(dlRes?.data) ? dlRes.data : []).filter(x => x.link || x.pay_link);
+                                        if (!dls.length) {
+                                            await send(from, { text: '⚠️ No download links for this episode right now.' }, { quoted: erm });
+                                            return;
+                                        }
+                                        const qText = dls.map((x, i) => `*${String(i + 1).padStart(2, '0')}* ➜ 💾 ${x.quality || 'Direct MP4'} (${x.size || 'Direct'})`).join('\n');
+                                        const qm = await send(from, {
+                                            text: formatMessage('📥 DOWNLOAD QUALITIES', `*${epTitle}*\n\n${qText}\n\n📌 Reply to this message with a number to get the file.`, cfg.BOT_FOOTER)
+                                        }, { quoted: erm });
+                                        if (!qm?.key?.id) return;
+                                        pickQuality(qm, dls, epTitle, tvCard, tvCard, sendCard, false);
+                                    });
+                                };
+
+                                if (seasons.length === 1) {
+                                    await sendCard(tvCard);
+                                    await showEpisodes(seasons[0], rmsg);
+                                    return;
+                                }
+                                const seasonList = seasons.map((sn, i) => `*${String(i + 1).padStart(2, '0')}* ➜ 🗂️ ${sn.season_name || 'Season ' + sn.season} (${sn.episodes.length} episodes)`).join('\n');
+                                const seasonMsg = await sendCard(`${tvCard}\n\n${seasonList}\n\n📌 Reply with a season number.`);
+                                if (!seasonMsg?.key?.id) return;
+                                awaitPick(seasonMsg.key.id, seasons.length, async (sn, srm) => { await showEpisodes(seasons[sn], srm); });
+                                return;
+                            }
+                            if (isTv(item)) {
+                                const episodes = d.episodes || d.downloads || [];
+                                await sendCard(formatMessage(
+                                    '📺 TV SERIES',
+                                    `*${title}*\n⭐ Rating: ${d.rating || d.imdb || 'N/A'}\n📅 Year: ${d.year || 'N/A'}\n🎬 Episodes: ${episodes.length}`,
+                                    cfg.BOT_FOOTER
+                                ));
+                                if (episodes.length) {
+                                    const epText = episodes.slice(0, 15)
+                                        .map((ep, i) => `*Episode ${i + 1}:* ${ep.name || ep.title || `Episode ${i + 1}`}\n🔗 ${ep.download_link || ep.link || ep.url}`)
+                                        .join('\n\n');
+                                    await send(from, { text: formatMessage('📥 EPISODES', epText, cfg.BOT_FOOTER) }, { quoted: rmsg });
+                                }
+                                return;
+                            }
+
+                            // ---- Movie: details + quality list ----
+                            const genres = (Array.isArray(d.genres) ? d.genres : [d.genres])
+                                .filter(g => g && !String(g).startsWith('#') && !/updated$/i.test(String(g)))
+                                .join(', ') || 'N/A';
+                            const story = d.story ? (d.story.length > 220 ? d.story.slice(0, 220) + '...' : d.story) : 'N/A';
+                            const movieBody = `*${title}*\n⭐ IMDB: ${d.imdb || d.rating || 'N/A'}\n📅 Year: ${d.year || 'N/A'}\n⏳ Duration: ${d.duration || 'N/A'}\n🌍 Country: ${d.country || 'N/A'}\n🎭 Genres: ${genres}\n📝 Story: ${story}`;
+                            // Details + poster from TMDB (null -> the old card built from the download API's own data)
+                            if (!config.TMDB_API_KEY && !tmdbWarned) {
+                                tmdbWarned = true;
+                                console.warn('TMDB_API_KEY is not set - movie cards use the download API details.');
+                            }
+                            // cartoons.lk titles: "Rango Sinhala Dubbed Movie | සිංහල හඩකැවූ ..." -> "Rango"
+                            const lookupTitle = isCt ? (title.split('|')[0].replace(/sinhala\s*dubbed(\s*movie)?/ig, '').trim() || title) : title;
+                            const tmdb = await tmdbLookup(lookupTitle, d.year, { key: config.TMDB_API_KEY, imageType: config.TMDB_IMAGE });
+                            if (tmdb?.image) poster = tmdb.image;
+                            const tail = footerTail(cfg.BOT_FOOTER);
+                            const movieCard = tmdb
+                                ? tmdbCard(tmdb, { name: cfg.BOT_NAME || config.BOT_NAME, footer: tail })
+                                : formatMessage('🎬 MOVIE DETAILS', movieBody, cfg.BOT_FOOTER);
+                            // card for the upload group: also says who requested it
+                            const movieCardGroup = tmdb
+                                ? tmdbCard(tmdb, { name: cfg.BOT_NAME || config.BOT_NAME, footer: tail, requestedBy: reqTag })
+                                : formatMessage('🎬 MOVIE DETAILS', `${movieBody}\n\n👤 *Requested by:* ${reqTag}`, cfg.BOT_FOOTER);
+
+                            const allDownloads = d.downloads || [];
+                            // WhatsApp max file size is 2GB: the request system only offers files that can be sent
+                            const downloads = isMb ? allDownloads.filter(x => dlSizeMb(x.size) <= 2048) : allDownloads;
+
+                            let qMsg;
+                            if (tmdb && downloads.length) {
+                                // one message: poster + details + quality list (reply with a number)
+                                const labels = downloads.map(dl => `${dl.quality || 'Direct MP4'} • ${dl.size || 'Direct'}`);
+                                qMsg = await sendCard(tmdbListCard(tmdb, { name: cfg.BOT_NAME || config.BOT_NAME, footer: tail, qualities: labels }));
+                            } else {
+                                await sendCard(movieCard);
+                                if (!downloads.length) {
+                                    await send(from, { text: allDownloads.length ? '⚠️ All available qualities are over 2GB (WhatsApp limit).' : '⚠️ No direct downloads available for this movie right now.' }, { quoted: rmsg });
+                                    return;
+                                }
+                                const qText = downloads
+                                    .map((dl, i) => `*${String(i + 1).padStart(2, '0')}* ➜ 💾 ${dl.quality || 'Direct MP4'} (${dl.size || 'Direct'})`)
+                                    .join('\n');
+                                qMsg = await send(from, {
+                                    text: formatMessage('📥 DOWNLOAD QUALITIES', `${qText}\n\n📌 Reply to this message with a number to get the file.`, cfg.BOT_FOOTER)
+                                }, { quoted: rmsg });
+                            }
+                            if (!qMsg?.key?.id) return;
+
+                            pickQuality(qMsg, downloads, title, movieCard, movieCardGroup, sendCard, !!tmdb);
                         });
                     } catch (err) {
                         console.error(`${srcName} search error:`, err.message);
